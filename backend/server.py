@@ -48,6 +48,8 @@ class IGAccountCreate(BaseModel):
     proxy: str = ""
 
 class IGAccountUpdate(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
     proxy: Optional[str] = None
 
 class ChallengeSubmit(BaseModel):
@@ -689,13 +691,33 @@ async def delete_account(account_id: str):
 
 @api_router.patch("/accounts/{account_id}")
 async def update_account(account_id: str, data: IGAccountUpdate):
+    account = await db.ig_accounts.find_one({"id": account_id}, {"_id": 0})
+    if not account:
+        raise HTTPException(status_code=404, detail="Akun tidak ditemukan")
     update = {}
+    if data.username is not None and data.username.strip():
+        existing = await db.ig_accounts.find_one({"username": data.username.strip(), "id": {"$ne": account_id}}, {"_id": 0})
+        if existing:
+            raise HTTPException(status_code=400, detail="Username sudah digunakan akun lain")
+        update["username"] = data.username.strip()
+    if data.password is not None and data.password.strip():
+        update["password"] = data.password.strip()
     if data.proxy is not None:
-        update["proxy"] = data.proxy
+        update["proxy"] = data.proxy.strip()
     if not update:
         raise HTTPException(status_code=400, detail="Tidak ada data untuk diupdate")
+    # Reset login state when credentials change
+    if "username" in update or "password" in update:
+        update["is_logged_in"] = False
+        update["login_status"] = "idle"
+        update["login_error"] = None
+        update["challenge_method"] = None
+        ig_clients.pop(account_id, None)
+        challenge_states.pop(account_id, None)
+        await db.ig_sessions.delete_one({"account_id": account_id})
     await db.ig_accounts.update_one({"id": account_id}, {"$set": update})
-    return {"message": "Akun diupdate"}
+    updated = await db.ig_accounts.find_one({"id": account_id}, {"_id": 0, "password": 0})
+    return updated
 
 @api_router.post("/accounts/{account_id}/login")
 async def login_account(account_id: str):

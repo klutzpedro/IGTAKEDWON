@@ -13,6 +13,7 @@ import {
   ArrowClockwise,
   Globe,
   WarningCircle,
+  PencilSimple,
 } from "@phosphor-icons/react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -39,6 +40,7 @@ export default function Accounts() {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const [showEditDialog, setShowEditDialog] = useState(false);
   const [showChallengeDialog, setShowChallengeDialog] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -50,6 +52,12 @@ export default function Accounts() {
   const [challengeCode, setChallengeCode] = useState("");
   const [challengeInfo, setChallengeInfo] = useState(null);
   const [submittingChallenge, setSubmittingChallenge] = useState(false);
+  const [editAccount, setEditAccount] = useState(null);
+  const [editUsername, setEditUsername] = useState("");
+  const [editPassword, setEditPassword] = useState("");
+  const [editProxy, setEditProxy] = useState("");
+  const [showEditPassword, setShowEditPassword] = useState(false);
+  const [editSubmitting, setEditSubmitting] = useState(false);
 
   const fetchAccounts = async () => {
     try {
@@ -166,6 +174,49 @@ export default function Accounts() {
       fetchAccounts();
     } catch (e) {
       toast.error("Gagal logout");
+    }
+  };
+
+  const openEditDialog = (account) => {
+    setEditAccount(account);
+    setEditUsername(account.username);
+    setEditPassword("");
+    setEditProxy(account.proxy || "");
+    setShowEditPassword(false);
+    setShowEditDialog(true);
+  };
+
+  const handleEdit = async () => {
+    if (!editUsername.trim()) {
+      toast.error("Username tidak boleh kosong");
+      return;
+    }
+    const payload = {};
+    if (editUsername.trim() !== editAccount.username) {
+      payload.username = editUsername.trim();
+    }
+    if (editPassword.trim()) {
+      payload.password = editPassword.trim();
+    }
+    if (editProxy.trim() !== (editAccount.proxy || "")) {
+      payload.proxy = editProxy.trim();
+    }
+    if (Object.keys(payload).length === 0) {
+      toast.info("Tidak ada perubahan");
+      setShowEditDialog(false);
+      return;
+    }
+    setEditSubmitting(true);
+    try {
+      await axios.patch(`${API}/accounts/${editAccount.id}`, payload);
+      toast.success(`Akun @${editAccount.username} berhasil diupdate`);
+      setShowEditDialog(false);
+      setEditAccount(null);
+      fetchAccounts();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Gagal mengupdate akun");
+    } finally {
+      setEditSubmitting(false);
     }
   };
 
@@ -327,6 +378,16 @@ export default function Accounts() {
                             Login
                           </Button>
                         )}
+                        <Button
+                          data-testid={`edit-btn-${acc.username}`}
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openEditDialog(acc)}
+                          className="gap-1 text-xs"
+                        >
+                          <PencilSimple size={14} />
+                          Edit
+                        </Button>
                         <Button
                           data-testid={`delete-btn-${acc.username}`}
                           variant="outline"
@@ -499,6 +560,97 @@ export default function Accounts() {
                 Verifikasi
               </Button>
             </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Account Dialog */}
+      <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Chivo' }}>
+              <div className="flex items-center gap-2">
+                <PencilSimple size={24} className="text-blue-600" />
+                Edit Akun
+              </div>
+            </DialogTitle>
+            <DialogDescription>
+              Edit kredensial akun <strong>@{editAccount?.username}</strong>. Jika username/password diubah, Anda perlu login ulang.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div>
+              <label className="text-xs uppercase tracking-[0.2em] font-bold text-slate-500 mb-1.5 block">
+                Username
+              </label>
+              <Input
+                data-testid="edit-input-username"
+                placeholder="username_instagram"
+                value={editUsername}
+                onChange={(e) => setEditUsername(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-[0.2em] font-bold text-slate-500 mb-1.5 block">
+                Password Baru (kosongkan jika tidak diubah)
+              </label>
+              <div className="relative">
+                <Input
+                  data-testid="edit-input-password"
+                  type={showEditPassword ? "text" : "password"}
+                  placeholder="Kosongkan jika tidak diubah"
+                  value={editPassword}
+                  onChange={(e) => setEditPassword(e.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowEditPassword(!showEditPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  {showEditPassword ? <EyeSlash size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-[0.2em] font-bold text-slate-500 mb-1.5 block">
+                Proxy (Opsional)
+              </label>
+              <div className="relative">
+                <Input
+                  data-testid="edit-input-proxy"
+                  placeholder="http://user:pass@ip:port"
+                  value={editProxy}
+                  onChange={(e) => setEditProxy(e.target.value)}
+                />
+                <Globe size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              </div>
+            </div>
+            {(editUsername !== editAccount?.username || editPassword.trim()) && (
+              <div className="bg-amber-50 border border-amber-200 rounded-md p-3">
+                <p className="text-xs text-amber-700">
+                  <WarningCircle size={14} className="inline mr-1" weight="fill" />
+                  Mengubah username/password akan mereset status login. Anda perlu login ulang setelah menyimpan.
+                </p>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              data-testid="cancel-edit-account-btn"
+              variant="outline"
+              onClick={() => setShowEditDialog(false)}
+            >
+              Batal
+            </Button>
+            <Button
+              data-testid="submit-edit-account-btn"
+              onClick={handleEdit}
+              disabled={editSubmitting}
+              className="bg-blue-600 hover:bg-blue-700 gap-2"
+            >
+              {editSubmitting && <SpinnerGap size={14} className="animate-spin" />}
+              Simpan Perubahan
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
