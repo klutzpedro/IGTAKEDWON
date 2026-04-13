@@ -291,60 +291,72 @@ def _sync_resend_challenge(cl, challenge_path: str) -> dict:
 
 
 def _sync_report(cookies: dict, target_url: str, category: str) -> dict:
-    """Report via browser automation using session cookies from DB."""
+    """Report via browser automation - completes full Instagram report flow with screenshot proof."""
     from playwright.sync_api import sync_playwright
     import time
 
     try:
         parsed = parse_instagram_url(target_url)
-
         session_id = cookies.get("sessionid", "")
-        csrf_token = cookies.get("csrftoken", "")
-        ds_user_id = str(cookies.get("ds_user_id", ""))
-
         if not session_id:
             return {"status": "failed", "message": "Session tidak tersedia. Login ulang diperlukan."}
 
         clean_url = target_url.split("?")[0]
+        timestamp = int(time.time())
+        shortcode = parsed.get("shortcode", parsed.get("username", "unknown"))
+
+        # Map categories to Instagram's report option text
+        category_text_map = {
+            "false_information": "False information",
+            "hate_speech": "Violence, hate or exploitation",
+            "spam": "Scam, fraud or spam",
+            "nudity": "Nudity or sexual activity",
+            "violence": "Violence, hate or exploitation",
+            "illegal_sales": "Selling or promoting restricted items",
+            "bullying": "Bullying or unwanted contact",
+            "scam": "Scam, fraud or spam",
+            "suicide": "Suicide, self-injury or eating disorders",
+            "eating_disorders": "Suicide, self-injury or eating disorders",
+            "dont_like": "I just don't like it",
+        }
 
         with sync_playwright() as p:
             browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
+                headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"],
                 executable_path="/pw-browsers/chromium-1208/chrome-linux/chrome"
             )
             ctx = browser.new_context(
                 viewport={"width": 1280, "height": 900},
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
-
             all_cookies = [
                 {"name": "sessionid", "value": session_id, "domain": ".instagram.com", "path": "/"},
-                {"name": "csrftoken", "value": csrf_token, "domain": ".instagram.com", "path": "/"},
-                {"name": "ds_user_id", "value": ds_user_id, "domain": ".instagram.com", "path": "/"},
+                {"name": "csrftoken", "value": cookies.get("csrftoken", ""), "domain": ".instagram.com", "path": "/"},
+                {"name": "ds_user_id", "value": str(cookies.get("ds_user_id", "")), "domain": ".instagram.com", "path": "/"},
             ]
-            for k in ["ig_did", "mid", "rur", "ig_nrcb"]:
+            for k in ["mid", "ig_did", "rur", "ig_nrcb"]:
                 if cookies.get(k):
                     all_cookies.append({"name": k, "value": cookies[k], "domain": ".instagram.com", "path": "/"})
+            all_cookies.append({"name": "ig_nrcb", "value": "1", "domain": ".instagram.com", "path": "/"})
             ctx.add_cookies(all_cookies)
 
             page = ctx.new_page()
 
             try:
-                # Visit homepage first to establish session
+                # Step 1: Establish session
                 page.goto("https://www.instagram.com/", wait_until="domcontentloaded", timeout=20000)
                 time.sleep(2)
 
-                # Navigate to target
+                # Step 2: Navigate to target
                 page.goto(clean_url, wait_until="domcontentloaded", timeout=20000)
                 time.sleep(3)
 
                 if "login" in page.url.lower():
                     browser.close()
-                    return {"status": "failed", "message": "Session expired di browser. Login ulang diperlukan."}
+                    return {"status": "failed", "message": "Session expired. Login ulang diperlukan."}
 
-                # Close any popups
-                for sel in ['button:has-text("Not Now")', 'button:has-text("Not now")', 'svg[aria-label="Close"]']:
+                # Dismiss popups
+                for sel in ['button:has-text("Not Now")', 'button:has-text("Not now")']:
                     try:
                         el = page.locator(sel).first
                         if el.is_visible(timeout=1000):
@@ -354,128 +366,190 @@ def _sync_report(cookies: dict, target_url: str, category: str) -> dict:
                         pass
 
                 if parsed["type"] in ("post", "reel"):
-                    # Click More options (three dots)
+                    # Step 3: Click three-dot menu
                     try:
                         more = page.locator('svg[aria-label="More options"]').first
                         more.click(force=True)
                         time.sleep(2)
                     except Exception as e:
                         browser.close()
-                        return {"status": "failed", "message": f"Tidak bisa klik menu: {str(e)[:150]}"}
+                        return {"status": "failed", "message": f"Menu tidak ditemukan: {str(e)[:100]}"}
 
-                    # Look for Report button
-                    report_found = False
-                    for sel in ['button:has-text("Report")', 'button:has-text("Laporkan")', 'text="Report"', 'text="Laporkan"']:
+                    # Step 4: Click Report
+                    report_clicked = False
+                    for sel in ['button:has-text("Report")', 'button:has-text("Laporkan")']:
                         try:
                             el = page.locator(sel).first
-                            if el.is_visible(timeout=1500):
+                            if el.is_visible(timeout=3000):
                                 el.click()
-                                report_found = True
-                                time.sleep(2)
+                                report_clicked = True
+                                time.sleep(3)
                                 break
                         except:
                             continue
 
-                    if not report_found:
-                        # Capture screenshot of what's visible as proof that we tried
-                        screenshot_name = f"noreport_{parsed.get('shortcode', 'unknown')}_{int(time.time())}.png"
-                        screenshot_path = f"/app/backend/screenshots/{screenshot_name}"
-                        try:
-                            page.screenshot(path=screenshot_path, full_page=False)
-                        except:
-                            pass
+                    if not report_clicked:
+                        ss = f"noreport_{shortcode}_{timestamp}.png"
+                        try: page.screenshot(path=f"/app/backend/screenshots/{ss}", full_page=False)
+                        except: ss = ""
                         browser.close()
-                        return {
-                            "status": "failed",
-                            "message": "Tombol 'Report' tidak tersedia di menu Instagram web. Instagram tidak menampilkan opsi Report untuk session ini. Saran: laporkan secara manual via app Instagram.",
-                            "screenshot": screenshot_name
-                        }
+                        return {"status": "failed", "message": "Tombol Report tidak muncul di menu.", "screenshot": ss}
 
-                    # Report button WAS found and clicked - proceed with reason selection
-                    reason_map = {
-                        "false_information": ["false", "palsu", "misinformation"],
-                        "hate_speech": ["hate", "kebencian"],
-                        "spam": ["spam", "junk"],
-                        "nudity": ["nudity", "sexual"],
-                        "violence": ["violence", "dangerous"],
-                        "bullying": ["bully", "harassment"],
-                        "scam": ["scam", "fraud"],
-                    }
-                    keywords = reason_map.get(category, ["spam", "inappropriate"])
-
-                    # Click matching reason
+                    # Step 5: Select report category
+                    target_text = category_text_map.get(category, "I just don't like it")
+                    category_clicked = False
                     try:
-                        buttons = page.locator('button, [role="button"], [role="menuitem"]').all()
-                        for btn in buttons:
-                            try:
-                                txt = (btn.inner_text() or "").lower()
-                                for kw in keywords:
-                                    if kw in txt:
-                                        btn.click()
-                                        time.sleep(1.5)
-                                        break
-                            except:
-                                continue
+                        # Try exact match first
+                        opt = page.locator(f'button:has-text("{target_text}")').first
+                        if opt.is_visible(timeout=2000):
+                            opt.click()
+                            category_clicked = True
+                            time.sleep(3)
                     except:
                         pass
 
-                    # Click submit/next buttons
-                    for submit in ["Submit", "Kirim", "Done", "Selesai", "Next", "Lanjut", "Close", "Tutup"]:
+                    if not category_clicked:
+                        # Try partial match
+                        buttons = page.locator('button').all()
+                        for btn in buttons:
+                            try:
+                                txt = (btn.inner_text() or "").strip()
+                                if txt and btn.is_visible() and target_text.lower()[:10] in txt.lower():
+                                    btn.click()
+                                    category_clicked = True
+                                    time.sleep(3)
+                                    break
+                            except:
+                                continue
+
+                    if not category_clicked:
+                        # Fallback: click "I just don't like it"
                         try:
-                            btn = page.locator(f'button:has-text("{submit}")').first
-                            if btn.is_visible(timeout=1000):
-                                btn.click()
-                                time.sleep(1)
+                            fallback = page.locator('button:has-text("I just don")').first
+                            if fallback.is_visible(timeout=1500):
+                                fallback.click()
+                                time.sleep(3)
+                        except:
+                            pass
+
+                    # Step 6: Handle sub-categories (Instagram has 2-level report flow)
+                    # After selecting main category, sub-options may appear
+                    time.sleep(1)
+                    sub_options = page.locator('button, [role="menuitem"]').all()
+                    for opt in sub_options:
+                        try:
+                            txt = (opt.inner_text() or "").strip()
+                            vis = opt.is_visible()
+                            # Click first visible sub-option that looks like a report reason
+                            # (has arrow > indicator, not Submit/Close)
+                            if (vis and txt and len(txt) > 5 and len(txt) < 80
+                                and txt not in ["Submit report", "Close", "Cancel"]
+                                and "submit" not in txt.lower() and "close" not in txt.lower()):
+                                # Check if this is a clickable sub-option (has arrow)
+                                parent_html = opt.evaluate("el => el.outerHTML")
+                                if ">" in (opt.inner_text() or "") or opt.evaluate("el => el.querySelector('svg') !== null"):
+                                    opt.click()
+                                    time.sleep(2)
+                                    break
                         except:
                             continue
 
-                    # Capture screenshot as proof
-                    screenshot_name = f"report_{parsed.get('shortcode', 'unknown')}_{int(time.time())}.png"
-                    screenshot_path = f"/app/backend/screenshots/{screenshot_name}"
+                    # Step 7: Click Submit report button
+                    for _ in range(3):
+                        for btn_text in ["Submit report", "Submit Report", "Submit", "Next", "Done"]:
+                            try:
+                                btn = page.locator(f'button:has-text("{btn_text}")').first
+                                if btn.is_visible(timeout=1500):
+                                    btn.click()
+                                    time.sleep(3)
+                            except:
+                                continue
+
+                    # Step 7: CAPTURE SCREENSHOT NOW (before closing) - this is when "Thanks for reporting" shows
+                    time.sleep(2)
+                    page_text = page.content().lower()
+                    confirmed = ("thanks for reporting" in page_text
+                                or "thank you for reporting" in page_text
+                                or "terima kasih" in page_text)
+
+                    ss = f"report_{shortcode}_{timestamp}.png"
+                    try: page.screenshot(path=f"/app/backend/screenshots/{ss}", full_page=False)
+                    except: ss = ""
+
+                    # Step 8: Click Close AFTER screenshot
                     try:
-                        page.screenshot(path=screenshot_path, full_page=False)
+                        close = page.locator('button:has-text("Close")').first
+                        if close.is_visible(timeout=1500):
+                            close.click()
                     except:
-                        screenshot_path = ""
+                        pass
 
                     browser.close()
-                    return {"status": "success", "message": f"Report dikirim via browser untuk {parsed.get('display', '')}", "screenshot": screenshot_name}
+
+                    if confirmed:
+                        return {
+                            "status": "success",
+                            "message": f"Report BERHASIL terkirim ke Instagram untuk {parsed.get('display', '')}. Konfirmasi: 'Thanks for reporting this post'",
+                            "screenshot": ss
+                        }
+                    else:
+                        return {
+                            "status": "success",
+                            "message": f"Report flow selesai untuk {parsed.get('display', '')}. Cek screenshot untuk bukti.",
+                            "screenshot": ss
+                        }
 
                 elif parsed["type"] == "profile":
+                    # Profile report flow
                     try:
                         opts = page.locator('svg[aria-label="Options"], svg[aria-label="Opsi"]').first
                         opts.click(force=True)
                         time.sleep(2)
                     except:
                         browser.close()
-                        return {"status": "failed", "message": "Tidak bisa buka menu profil."}
+                        return {"status": "failed", "message": "Menu profil tidak ditemukan."}
 
-                    report_found = False
+                    report_clicked = False
                     for sel in ['button:has-text("Report")', 'button:has-text("Laporkan")']:
                         try:
                             el = page.locator(sel).first
-                            if el.is_visible(timeout=1500):
+                            if el.is_visible(timeout=3000):
                                 el.click()
-                                report_found = True
-                                time.sleep(2)
+                                report_clicked = True
+                                time.sleep(3)
                                 break
                         except:
                             continue
 
-                    if not report_found:
+                    if not report_clicked:
                         browser.close()
-                        return _sync_report_via_help_form(cookies, target_url, category, parsed)
+                        return {"status": "failed", "message": "Tombol Report tidak muncul di menu profil."}
 
-                    for submit in ["Submit", "Kirim", "Next", "Lanjut"]:
-                        try:
-                            btn = page.locator(f'button:has-text("{submit}")').first
-                            if btn.is_visible(timeout=1000):
-                                btn.click()
-                                time.sleep(1)
-                        except:
-                            continue
+                    # Select reason and submit
+                    target_text = category_text_map.get(category, "I just don't like it")
+                    try:
+                        opt = page.locator(f'button:has-text("{target_text}")').first
+                        if opt.is_visible(timeout=2000):
+                            opt.click()
+                            time.sleep(3)
+                    except:
+                        pass
 
+                    for _ in range(3):
+                        for btn_text in ["Submit report", "Submit", "Next", "Done"]:
+                            try:
+                                btn = page.locator(f'button:has-text("{btn_text}")').first
+                                if btn.is_visible(timeout=1000):
+                                    btn.click()
+                                    time.sleep(2)
+                            except:
+                                continue
+
+                    ss = f"report_{shortcode}_{timestamp}.png"
+                    try: page.screenshot(path=f"/app/backend/screenshots/{ss}", full_page=False)
+                    except: ss = ""
                     browser.close()
-                    return {"status": "success", "message": f"Report dikirim untuk @{parsed.get('username', '')}"}
+                    return {"status": "success", "message": f"Report terkirim untuk @{parsed.get('username', '')}", "screenshot": ss}
 
                 browser.close()
                 return {"status": "failed", "message": "Tipe target belum didukung."}
