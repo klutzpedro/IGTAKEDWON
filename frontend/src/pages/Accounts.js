@@ -9,6 +9,10 @@ import {
   EyeSlash,
   UserCircle,
   SpinnerGap,
+  ShieldCheck,
+  ArrowClockwise,
+  Globe,
+  WarningCircle,
 } from "@phosphor-icons/react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -23,15 +27,29 @@ import { toast } from "sonner";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
+const LOGIN_STATUS_MAP = {
+  idle: { label: "Belum Login", color: "bg-slate-100 text-slate-600" },
+  logging_in: { label: "Sedang Login...", color: "bg-blue-100 text-blue-700" },
+  challenge_required: { label: "Verifikasi", color: "bg-amber-100 text-amber-700" },
+  logged_in: { label: "Aktif", color: "bg-green-100 text-green-700" },
+  failed: { label: "Gagal", color: "bg-red-100 text-red-700" },
+};
+
 export default function Accounts() {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showDialog, setShowDialog] = useState(false);
+  const [showAddDialog, setShowAddDialog] = useState(false);
+  const [showChallengeDialog, setShowChallengeDialog] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [proxy, setProxy] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [loggingIn, setLoggingIn] = useState({});
+  const [challengeAccount, setChallengeAccount] = useState(null);
+  const [challengeCode, setChallengeCode] = useState("");
+  const [challengeInfo, setChallengeInfo] = useState(null);
+  const [submittingChallenge, setSubmittingChallenge] = useState(false);
 
   const fetchAccounts = async () => {
     try {
@@ -46,6 +64,8 @@ export default function Accounts() {
 
   useEffect(() => {
     fetchAccounts();
+    const interval = setInterval(fetchAccounts, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleAdd = async () => {
@@ -55,11 +75,16 @@ export default function Accounts() {
     }
     setSubmitting(true);
     try {
-      await axios.post(`${API}/accounts`, { username: username.trim(), password });
+      await axios.post(`${API}/accounts`, {
+        username: username.trim(),
+        password,
+        proxy: proxy.trim(),
+      });
       toast.success(`Akun @${username.trim()} ditambahkan`);
-      setShowDialog(false);
+      setShowAddDialog(false);
       setUsername("");
       setPassword("");
+      setProxy("");
       fetchAccounts();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Gagal menambahkan akun");
@@ -68,17 +93,70 @@ export default function Accounts() {
     }
   };
 
-  const handleLogin = async (accountId, accountUsername) => {
-    setLoggingIn((prev) => ({ ...prev, [accountId]: true }));
+  const handleLogin = async (account) => {
+    setLoggingIn((prev) => ({ ...prev, [account.id]: true }));
     try {
-      await axios.post(`${API}/accounts/${accountId}/login`);
-      toast.success(`@${accountUsername} berhasil login`);
+      const { data } = await axios.post(`${API}/accounts/${account.id}/login`);
+
+      if (data.status === "challenge_required") {
+        setChallengeAccount(account);
+        setChallengeInfo(data);
+        setChallengeCode("");
+        setShowChallengeDialog(true);
+        toast.info(data.message || "Verifikasi diperlukan");
+      } else {
+        toast.success(data.message || `@${account.username} berhasil login`);
+      }
       fetchAccounts();
     } catch (e) {
-      toast.error(e.response?.data?.detail || `Login @${accountUsername} gagal`);
+      const detail = e.response?.data?.detail || "";
+      toast.error(detail || `Login @${account.username} gagal`);
+      fetchAccounts();
     } finally {
-      setLoggingIn((prev) => ({ ...prev, [accountId]: false }));
+      setLoggingIn((prev) => ({ ...prev, [account.id]: false }));
     }
+  };
+
+  const handleSubmitChallenge = async () => {
+    if (!challengeCode.trim()) {
+      toast.error("Masukkan kode verifikasi");
+      return;
+    }
+    setSubmittingChallenge(true);
+    try {
+      const { data } = await axios.post(
+        `${API}/accounts/${challengeAccount.id}/challenge`,
+        { code: challengeCode.trim() }
+      );
+      toast.success(data.message || "Verifikasi berhasil!");
+      setShowChallengeDialog(false);
+      setChallengeAccount(null);
+      setChallengeCode("");
+      setChallengeInfo(null);
+      fetchAccounts();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Kode verifikasi salah");
+    } finally {
+      setSubmittingChallenge(false);
+    }
+  };
+
+  const handleResendCode = async () => {
+    try {
+      const { data } = await axios.post(
+        `${API}/accounts/${challengeAccount.id}/challenge/resend`
+      );
+      toast.success(data.message || "Kode dikirim ulang");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Gagal kirim ulang kode");
+    }
+  };
+
+  const openChallengeDialog = (account) => {
+    setChallengeAccount(account);
+    setChallengeCode("");
+    setChallengeInfo({ method: account.challenge_method || "email" });
+    setShowChallengeDialog(true);
   };
 
   const handleLogout = async (accountId, accountUsername) => {
@@ -115,12 +193,26 @@ export default function Accounts() {
         </div>
         <Button
           data-testid="add-account-btn"
-          onClick={() => setShowDialog(true)}
+          onClick={() => setShowAddDialog(true)}
           className="gap-2 bg-blue-600 hover:bg-blue-700"
         >
           <Plus size={16} weight="bold" />
           Tambah Akun
         </Button>
+      </div>
+
+      {/* Info box about proxy */}
+      <div className="bg-amber-50 border border-amber-200 rounded-md p-4 flex gap-3">
+        <WarningCircle size={20} className="text-amber-600 flex-shrink-0 mt-0.5" />
+        <div className="text-sm text-amber-800">
+          <p className="font-semibold mb-1">Tips Login Instagram</p>
+          <ul className="list-disc pl-4 space-y-1 text-xs text-amber-700">
+            <li>Gunakan <strong>proxy residential</strong> untuk menghindari blokir IP (format: http://user:pass@ip:port)</li>
+            <li>Instagram akan mengirim kode verifikasi via email/SMS saat login dari lokasi baru</li>
+            <li>Pastikan Anda punya akses ke email/nomor HP yang terdaftar di akun Instagram</li>
+            <li>Jika muncul CAPTCHA, tunggu beberapa jam sebelum coba lagi</li>
+          </ul>
+        </div>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-md">
@@ -129,7 +221,8 @@ export default function Accounts() {
             <TableRow className="bg-slate-50">
               <TableHead>Username</TableHead>
               <TableHead>Status</TableHead>
-              <TableHead>Error</TableHead>
+              <TableHead>Proxy</TableHead>
+              <TableHead>Info</TableHead>
               <TableHead>Ditambahkan</TableHead>
               <TableHead className="text-right">Aksi</TableHead>
             </TableRow>
@@ -137,93 +230,124 @@ export default function Accounts() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={5} className="text-center py-10">
+                <TableCell colSpan={6} className="text-center py-10">
                   <SpinnerGap size={24} className="animate-spin mx-auto text-slate-400" />
                 </TableCell>
               </TableRow>
             ) : accounts.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="text-center py-10">
+                <TableCell colSpan={6} className="text-center py-10">
                   <UserCircle size={40} className="mx-auto text-slate-300 mb-2" />
                   <p className="text-sm text-slate-400">Belum ada akun. Klik "Tambah Akun" untuk memulai.</p>
                 </TableCell>
               </TableRow>
             ) : (
-              accounts.map((acc, idx) => (
-                <TableRow
-                  key={acc.id}
-                  data-testid={`account-row-${acc.username}`}
-                  className={idx % 2 === 0 ? "" : "bg-slate-50"}
-                >
-                  <TableCell className="font-medium text-slate-800">
-                    <div className="flex items-center gap-2">
-                      <UserCircle size={20} weight="duotone" className="text-slate-400" />
-                      @{acc.username}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={acc.is_logged_in ? "default" : "secondary"}
-                      className={acc.is_logged_in ? "bg-green-600 hover:bg-green-700" : ""}
-                    >
-                      {acc.is_logged_in ? "Aktif" : "Tidak Aktif"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-xs text-red-500 max-w-[200px] truncate">
-                    {acc.login_error || "—"}
-                  </TableCell>
-                  <TableCell className="text-xs text-slate-500 font-mono">
-                    {new Date(acc.created_at).toLocaleDateString("id-ID")}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      {acc.is_logged_in ? (
-                        <Button
-                          data-testid={`logout-btn-${acc.username}`}
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleLogout(acc.id, acc.username)}
-                          className="gap-1 text-xs"
-                        >
-                          <SignOut size={14} />
-                          Logout
-                        </Button>
+              accounts.map((acc, idx) => {
+                const st = LOGIN_STATUS_MAP[acc.login_status] || LOGIN_STATUS_MAP.idle;
+                return (
+                  <TableRow
+                    key={acc.id}
+                    data-testid={`account-row-${acc.username}`}
+                    className={idx % 2 === 0 ? "" : "bg-slate-50"}
+                  >
+                    <TableCell className="font-medium text-slate-800">
+                      <div className="flex items-center gap-2">
+                        <UserCircle size={20} weight="duotone" className="text-slate-400" />
+                        @{acc.username}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <span className={`inline-flex items-center text-xs px-2 py-1 rounded-md font-medium ${st.color}`}>
+                        {st.label}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      {acc.proxy ? (
+                        <div className="flex items-center gap-1 text-xs text-slate-500">
+                          <Globe size={12} />
+                          <span className="max-w-[100px] truncate">{acc.proxy}</span>
+                        </div>
                       ) : (
+                        <span className="text-xs text-slate-400">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs text-slate-500 max-w-[200px]">
+                      {acc.login_error ? (
+                        <span className="text-red-500 truncate block" title={acc.login_error}>
+                          {acc.login_error}
+                        </span>
+                      ) : acc.is_logged_in ? (
+                        <span className="text-green-600">Siap digunakan</span>
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs text-slate-500 font-mono">
+                      {new Date(acc.created_at).toLocaleDateString("id-ID")}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        {acc.login_status === "challenge_required" && (
+                          <Button
+                            data-testid={`challenge-btn-${acc.username}`}
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openChallengeDialog(acc)}
+                            className="gap-1 text-xs text-amber-600 hover:text-amber-700 hover:bg-amber-50 border-amber-300"
+                          >
+                            <ShieldCheck size={14} />
+                            Masukkan Kode
+                          </Button>
+                        )}
+                        {acc.is_logged_in ? (
+                          <Button
+                            data-testid={`logout-btn-${acc.username}`}
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleLogout(acc.id, acc.username)}
+                            className="gap-1 text-xs"
+                          >
+                            <SignOut size={14} />
+                            Logout
+                          </Button>
+                        ) : (
+                          <Button
+                            data-testid={`login-btn-${acc.username}`}
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleLogin(acc)}
+                            disabled={loggingIn[acc.id]}
+                            className="gap-1 text-xs"
+                          >
+                            {loggingIn[acc.id] ? (
+                              <SpinnerGap size={14} className="animate-spin" />
+                            ) : (
+                              <SignIn size={14} />
+                            )}
+                            Login
+                          </Button>
+                        )}
                         <Button
-                          data-testid={`login-btn-${acc.username}`}
+                          data-testid={`delete-btn-${acc.username}`}
                           variant="outline"
                           size="sm"
-                          onClick={() => handleLogin(acc.id, acc.username)}
-                          disabled={loggingIn[acc.id]}
-                          className="gap-1 text-xs"
+                          onClick={() => handleDelete(acc.id, acc.username)}
+                          className="text-red-500 hover:text-red-700 hover:bg-red-50"
                         >
-                          {loggingIn[acc.id] ? (
-                            <SpinnerGap size={14} className="animate-spin" />
-                          ) : (
-                            <SignIn size={14} />
-                          )}
-                          Login
+                          <Trash size={14} />
                         </Button>
-                      )}
-                      <Button
-                        data-testid={`delete-btn-${acc.username}`}
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleDelete(acc.id, acc.username)}
-                        className="text-red-500 hover:text-red-700 hover:bg-red-50"
-                      >
-                        <Trash size={14} />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
             )}
           </TableBody>
         </Table>
       </div>
 
-      <Dialog open={showDialog} onOpenChange={setShowDialog}>
+      {/* Add Account Dialog */}
+      <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle style={{ fontFamily: 'Chivo' }}>Tambah Akun Instagram</DialogTitle>
@@ -264,12 +388,29 @@ export default function Accounts() {
                 </button>
               </div>
             </div>
+            <div>
+              <label className="text-xs uppercase tracking-[0.2em] font-bold text-slate-500 mb-1.5 block">
+                Proxy (Opsional)
+              </label>
+              <div className="relative">
+                <Input
+                  data-testid="input-proxy"
+                  placeholder="http://user:pass@ip:port"
+                  value={proxy}
+                  onChange={(e) => setProxy(e.target.value)}
+                />
+                <Globe size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              </div>
+              <p className="text-xs text-slate-400 mt-1">
+                Gunakan proxy residential untuk menghindari blokir IP Instagram
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button
               data-testid="cancel-add-account-btn"
               variant="outline"
-              onClick={() => setShowDialog(false)}
+              onClick={() => setShowAddDialog(false)}
             >
               Batal
             </Button>
@@ -282,6 +423,82 @@ export default function Accounts() {
               {submitting && <SpinnerGap size={14} className="animate-spin" />}
               Simpan
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Challenge / Verification Code Dialog */}
+      <Dialog open={showChallengeDialog} onOpenChange={setShowChallengeDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Chivo' }}>
+              <div className="flex items-center gap-2">
+                <ShieldCheck size={24} className="text-amber-600" />
+                Verifikasi Diperlukan
+              </div>
+            </DialogTitle>
+            <DialogDescription>
+              Instagram memerlukan verifikasi untuk akun <strong>@{challengeAccount?.username}</strong>.
+              {challengeInfo?.method === "2fa"
+                ? " Masukkan kode dari authenticator app Anda."
+                : " Kode verifikasi telah dikirim ke email/SMS yang terdaftar."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="bg-blue-50 border border-blue-200 rounded-md p-3">
+              <p className="text-sm text-blue-800">
+                {challengeInfo?.method === "email" && "Cek inbox email yang terdaftar di akun Instagram Anda"}
+                {challengeInfo?.method === "sms" && "Cek SMS di nomor HP yang terdaftar di akun Instagram Anda"}
+                {challengeInfo?.method === "2fa" && "Buka Google Authenticator / authenticator app Anda"}
+                {!["email", "sms", "2fa"].includes(challengeInfo?.method) && "Cek email atau SMS Anda untuk kode verifikasi"}
+              </p>
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-[0.2em] font-bold text-slate-500 mb-1.5 block">
+                Kode Verifikasi
+              </label>
+              <Input
+                data-testid="input-challenge-code"
+                placeholder="Masukkan 6 digit kode"
+                value={challengeCode}
+                onChange={(e) => setChallengeCode(e.target.value)}
+                maxLength={8}
+                className="text-center text-lg tracking-[0.3em] font-mono"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSubmitChallenge();
+                }}
+              />
+            </div>
+          </div>
+          <DialogFooter className="flex items-center justify-between sm:justify-between">
+            <Button
+              data-testid="resend-code-btn"
+              variant="ghost"
+              size="sm"
+              onClick={handleResendCode}
+              className="text-xs text-slate-500 gap-1"
+            >
+              <ArrowClockwise size={12} />
+              Kirim Ulang Kode
+            </Button>
+            <div className="flex gap-2">
+              <Button
+                data-testid="cancel-challenge-btn"
+                variant="outline"
+                onClick={() => setShowChallengeDialog(false)}
+              >
+                Batal
+              </Button>
+              <Button
+                data-testid="submit-challenge-btn"
+                onClick={handleSubmitChallenge}
+                disabled={submittingChallenge}
+                className="bg-blue-600 hover:bg-blue-700 gap-2"
+              >
+                {submittingChallenge && <SpinnerGap size={14} className="animate-spin" />}
+                Verifikasi
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

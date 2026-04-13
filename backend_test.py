@@ -95,44 +95,112 @@ class IGReportAPITester:
         return False
 
     def test_account_crud(self):
-        """Test account CRUD operations"""
+        """Test account CRUD operations with new proxy and challenge features"""
         test_username = f"test_user_{datetime.now().strftime('%H%M%S')}"
         test_password = "TestPass123!"
+        test_proxy = "http://user:pass@proxy.example.com:8080"
         account_id = None
 
-        # Create account
+        # Create account with proxy
         success, data = self.run_test(
-            "Create Account",
+            "Create Account with Proxy",
             "POST",
             "accounts",
             200,
-            data={"username": test_username, "password": test_password}
+            data={"username": test_username, "password": test_password, "proxy": test_proxy}
         )
         if success and 'id' in data:
             account_id = data['id']
             print(f"✅ Account created with ID: {account_id}")
+            if data.get('proxy') == test_proxy:
+                print(f"✅ Proxy field saved correctly")
+            else:
+                print(f"⚠️  Proxy field not saved correctly")
         else:
             print("❌ Failed to create account")
             return False
 
-        # List accounts
+        # List accounts and check new fields
         success, data = self.run_test("List Accounts", "GET", "accounts", 200)
         if success and isinstance(data, list):
-            found_account = any(acc.get('username') == test_username for acc in data)
+            found_account = None
+            for acc in data:
+                if acc.get('username') == test_username:
+                    found_account = acc
+                    break
+            
             if found_account:
                 print(f"✅ Account found in list")
+                # Check required fields
+                required_fields = ['login_status', 'proxy', 'challenge_method']
+                missing_fields = [field for field in required_fields if field not in found_account]
+                if not missing_fields:
+                    print(f"✅ All required fields present: {required_fields}")
+                    print(f"   login_status: {found_account.get('login_status')}")
+                    print(f"   proxy: {found_account.get('proxy')}")
+                    print(f"   challenge_method: {found_account.get('challenge_method')}")
+                else:
+                    print(f"⚠️  Missing fields: {missing_fields}")
             else:
                 print(f"⚠️  Account not found in list")
         
-        # Try to login account (will fail without real IG credentials)
+        # Try to login account (will fail without real IG credentials but should return proper error)
         success, data = self.run_test(
-            "Login Account (Expected to fail)",
+            "Login Account (Expected to fail with proper error)",
             "POST",
             f"accounts/{account_id}/login",
             400  # Expected to fail
         )
         if success:
             print(f"✅ Login failed as expected (no real IG credentials)")
+            # Check if we get proper error message instead of generic 400
+            if 'detail' in data and data['detail']:
+                print(f"✅ Proper error message returned: {data['detail'][:100]}...")
+            else:
+                print(f"⚠️  Generic error message returned")
+
+        # Test PATCH account to update proxy
+        new_proxy = "http://newuser:newpass@newproxy.example.com:8080"
+        success, data = self.run_test(
+            "Update Account Proxy",
+            "PATCH",
+            f"accounts/{account_id}",
+            200,
+            data={"proxy": new_proxy}
+        )
+        if success:
+            print(f"✅ Account proxy updated successfully")
+
+        # Test logout endpoint
+        success, data = self.run_test(
+            "Logout Account",
+            "POST",
+            f"accounts/{account_id}/logout",
+            200
+        )
+        if success:
+            print(f"✅ Logout endpoint works")
+
+        # Test challenge endpoint (should fail without active challenge)
+        success, data = self.run_test(
+            "Submit Challenge Code (Expected to fail - no active challenge)",
+            "POST",
+            f"accounts/{account_id}/challenge",
+            400,  # Expected to fail
+            data={"code": "123456"}
+        )
+        if success:
+            print(f"✅ Challenge endpoint exists and properly rejects without active challenge")
+
+        # Test challenge resend endpoint (should fail without active challenge)
+        success, data = self.run_test(
+            "Resend Challenge Code (Expected to fail - no active challenge)",
+            "POST",
+            f"accounts/{account_id}/challenge/resend",
+            400  # Expected to fail
+        )
+        if success:
+            print(f"✅ Challenge resend endpoint exists and properly rejects without active challenge")
 
         # Delete account
         if account_id:
