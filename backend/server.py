@@ -1059,6 +1059,35 @@ async def manual_report(target_id: str):
     }})
     return {"results": results, "total_sent": new_total, "success_count": sc, "fail_count": len(results) - sc}
 
+class TargetAutoReportStart(BaseModel):
+    mode: str = "manual"
+
+@api_router.post("/targets/{target_id}/report-auto")
+async def start_target_auto_report(target_id: str, data: TargetAutoReportStart):
+    """Start auto-reporting for a specific target (variasi or manual mode)."""
+    global auto_report_running, auto_report_task, auto_report_mode, auto_report_cycle_count
+    target = await db.report_targets.find_one({"id": target_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Target tidak ditemukan")
+    accounts = await db.ig_accounts.find({"is_logged_in": True}, {"_id": 0}).to_list(100)
+    if not accounts:
+        raise HTTPException(400, "Tidak ada akun yang login")
+    # Enable auto_report on this target
+    await db.report_targets.update_one({"id": target_id}, {"$set": {"auto_report": True}})
+    # Start auto-report worker if not running
+    if not auto_report_running:
+        auto_report_mode = data.mode
+        auto_report_running = True
+        auto_report_cycle_count = 0
+        auto_report_task = asyncio.create_task(auto_report_worker())
+        await db.auto_report_state.update_one(
+            {"key": "state"}, {"$set": {"running": True, "mode": data.mode, "paused": False, "cycle_success": 0, "target_id": target_id}}, upsert=True)
+    return {
+        "message": f"Auto-report untuk {target['display_name']} dimulai (mode: {data.mode})",
+        "mode": data.mode,
+        "auto_report_running": True,
+    }
+
 # --- Report Logs ---
 @api_router.get("/reports")
 async def list_reports(limit: int = 50, target_id: Optional[str] = None):

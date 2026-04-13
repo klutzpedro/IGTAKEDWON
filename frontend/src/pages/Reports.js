@@ -10,6 +10,8 @@ import {
   SpinnerGap,
   Flag,
   PencilSimple,
+  Timer,
+  Hand,
 } from "@phosphor-icons/react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -20,6 +22,9 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "../components/ui/dialog";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "../components/ui/dropdown-menu";
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from "../components/ui/table";
@@ -117,6 +122,16 @@ export default function Reports() {
       toast.error(e.response?.data?.detail || "Gagal mengirim laporan");
     } finally {
       setReporting((prev) => ({ ...prev, [targetId]: false }));
+    }
+  };
+
+  const handleStartTargetAuto = async (targetId, mode) => {
+    try {
+      const { data } = await axios.post(`${API}/targets/${targetId}/report-auto`, { mode });
+      toast.success(data.message || `Auto-report dimulai (${mode})`);
+      fetchTargets();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Gagal memulai auto-report");
     }
   };
 
@@ -279,21 +294,48 @@ export default function Reports() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <Button
-                          data-testid={`report-btn-${t.id}`}
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleManualReport(t.id)}
-                          disabled={reporting[t.id]}
-                          className="gap-1 text-xs"
-                        >
-                          {reporting[t.id] ? (
-                            <SpinnerGap size={14} className="animate-spin" />
-                          ) : (
-                            <Play size={14} weight="fill" />
-                          )}
-                          Report
-                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              data-testid={`report-btn-${t.id}`}
+                              variant="outline"
+                              size="sm"
+                              disabled={reporting[t.id]}
+                              className="gap-1 text-xs"
+                            >
+                              {reporting[t.id] ? (
+                                <SpinnerGap size={14} className="animate-spin" />
+                              ) : (
+                                <Play size={14} weight="fill" />
+                              )}
+                              Report
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-64">
+                            <DropdownMenuItem
+                              data-testid={`report-variasi-${t.id}`}
+                              onClick={() => handleStartTargetAuto(t.id, "variasi")}
+                              className="flex items-start gap-2.5 p-2.5 cursor-pointer"
+                            >
+                              <Timer size={16} weight="duotone" className="text-blue-600 mt-0.5 flex-shrink-0" />
+                              <div>
+                                <p className="text-sm font-semibold text-slate-800">Variasi</p>
+                                <p className="text-xs text-slate-500">Jeda setiap 15-20 report, lanjut 1 jam</p>
+                              </div>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              data-testid={`report-manual-${t.id}`}
+                              onClick={() => handleStartTargetAuto(t.id, "manual")}
+                              className="flex items-start gap-2.5 p-2.5 cursor-pointer"
+                            >
+                              <Hand size={16} weight="duotone" className="text-amber-600 mt-0.5 flex-shrink-0" />
+                              <div>
+                                <p className="text-sm font-semibold text-slate-800">Manual</p>
+                                <p className="text-xs text-slate-500">Terus berjalan, stop secara manual</p>
+                              </div>
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                         <Button
                           data-testid={`edit-target-${t.id}`}
                           variant="outline"
