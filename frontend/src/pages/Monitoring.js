@@ -14,8 +14,6 @@ import {
   Globe,
   Warning,
   MagnifyingGlass,
-  Play,
-  Stop,
 } from "@phosphor-icons/react";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
@@ -39,7 +37,6 @@ const LINK_STATUS_MAP = {
 export default function Monitoring() {
   const [targets, setTargets] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [monitorRunning, setMonitorRunning] = useState(false);
   const [checking, setChecking] = useState(false);
   const [statusFilter, setStatusFilter] = useState("all");
   const [selectedTarget, setSelectedTarget] = useState(null);
@@ -50,12 +47,8 @@ export default function Monitoring() {
 
   const fetchData = async () => {
     try {
-      const [targetsRes, monitorRes] = await Promise.all([
-        axios.get(`${API}/targets`),
-        axios.get(`${API}/monitor/status`),
-      ]);
-      setTargets(targetsRes.data);
-      setMonitorRunning(monitorRes.data.running);
+      const { data } = await axios.get(`${API}/targets`);
+      setTargets(data);
     } catch (e) {
       console.error(e);
     } finally {
@@ -68,21 +61,6 @@ export default function Monitoring() {
     const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
   }, []);
-
-  const toggleMonitor = async () => {
-    try {
-      if (monitorRunning) {
-        await axios.post(`${API}/monitor/stop`);
-        toast.success("Auto-monitor dihentikan");
-      } else {
-        await axios.post(`${API}/monitor/start`);
-        toast.success("Auto-monitor dimulai - cek setiap 3 jam");
-      }
-      setMonitorRunning(!monitorRunning);
-    } catch (e) {
-      toast.error("Gagal mengubah status monitor");
-    }
-  };
 
   const checkNow = async () => {
     setChecking(true);
@@ -155,29 +133,16 @@ export default function Monitoring() {
             {checking ? <SpinnerGap size={14} className="animate-spin" /> : <MagnifyingGlass size={14} />}
             Cek Sekarang
           </Button>
-          <Button
-            data-testid="toggle-monitor-btn"
-            onClick={toggleMonitor}
-            variant={monitorRunning ? "destructive" : "default"}
-            className="gap-2"
-          >
-            {monitorRunning ? <Stop size={14} weight="fill" /> : <Play size={14} weight="fill" />}
-            {monitorRunning ? "Stop Monitor" : "Start Monitor"}
-          </Button>
         </div>
       </div>
 
       {/* Monitor status banner */}
-      <div className={`rounded-md p-4 flex items-center gap-3 ${monitorRunning ? 'bg-green-50 border border-green-200' : 'bg-slate-50 border border-slate-200'}`}>
-        <div className={`w-2.5 h-2.5 rounded-full ${monitorRunning ? 'bg-green-500 animate-pulse-dot' : 'bg-slate-300'}`} />
+      <div className="rounded-md p-4 flex items-center gap-3 bg-green-50 border border-green-200">
+        <div className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse-dot" />
         <div>
-          <p className="text-sm font-semibold text-slate-800">
-            {monitorRunning ? "Auto-Monitor Aktif" : "Auto-Monitor Tidak Aktif"}
-          </p>
+          <p className="text-sm font-semibold text-slate-800">Auto-Monitor Aktif</p>
           <p className="text-xs text-slate-500">
-            {monitorRunning
-              ? "Sistem otomatis mengecek setiap 3 jam apakah konten masih ada atau sudah di-takedown"
-              : "Klik 'Start Monitor' untuk memulai pengecekan otomatis setiap 3 jam"}
+            Sistem otomatis mengecek setiap 3 jam apakah konten masih ada atau sudah di-takedown. Gunakan "Cek Sekarang" untuk pengecekan langsung.
           </p>
         </div>
       </div>

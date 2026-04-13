@@ -1172,6 +1172,13 @@ app.add_middleware(CORSMiddleware, allow_credentials=True,
     allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
     allow_methods=["*"], allow_headers=["*"])
 
+@app.on_event("startup")
+async def startup_event():
+    global monitor_running, monitor_task
+    monitor_running = True
+    monitor_task = asyncio.create_task(monitor_worker())
+    logger.info("Auto-monitor started on server startup (every 3 hours)")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     global auto_report_running, monitor_running
