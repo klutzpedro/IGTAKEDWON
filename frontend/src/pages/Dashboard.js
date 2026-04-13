@@ -10,6 +10,7 @@ import {
   Timer,
   Hand,
   Pause,
+  XCircle,
 } from "@phosphor-icons/react";
 import { StatsCard } from "../components/StatsCard";
 import { Badge } from "../components/ui/badge";
@@ -183,12 +184,16 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
               </p>
             </div>
           </div>
-          {paused && (
-            <Badge variant="outline" className="border-amber-300 text-amber-700 gap-1">
-              <Pause size={12} weight="fill" />
-              Jeda 1 Jam
-            </Badge>
-          )}
+          <Button
+            data-testid="cancel-auto-report-banner-btn"
+            variant="outline"
+            size="sm"
+            onClick={stopAutoReport}
+            className="gap-1.5 text-xs border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700 flex-shrink-0"
+          >
+            <XCircle size={14} weight="fill" />
+            Cancel
+          </Button>
         </div>
       )}
 
