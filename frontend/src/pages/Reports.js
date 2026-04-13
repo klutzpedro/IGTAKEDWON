@@ -9,6 +9,7 @@ import {
   Link as LinkIcon,
   SpinnerGap,
   Flag,
+  PencilSimple,
 } from "@phosphor-icons/react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -39,11 +40,17 @@ export default function Reports() {
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showDialog, setShowDialog] = useState(false);
+  const [showEditDialog, setShowEditDialog] = useState(false);
   const [url, setUrl] = useState("");
   const [category, setCategory] = useState("spam");
   const [autoReport, setAutoReport] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [reporting, setReporting] = useState({});
+  const [editTarget, setEditTarget] = useState(null);
+  const [editUrl, setEditUrl] = useState("");
+  const [editCategory, setEditCategory] = useState("spam");
+  const [editAutoReport, setEditAutoReport] = useState(false);
+  const [editSubmitting, setEditSubmitting] = useState(false);
 
   const fetchTargets = async () => {
     try {
@@ -120,6 +127,46 @@ export default function Reports() {
       fetchTargets();
     } catch (e) {
       toast.error("Gagal mengubah auto-report");
+    }
+  };
+
+  const openEditDialog = (target) => {
+    setEditTarget(target);
+    setEditUrl(target.url);
+    setEditCategory(target.category);
+    setEditAutoReport(target.auto_report);
+    setShowEditDialog(true);
+  };
+
+  const handleEdit = async () => {
+    if (!editUrl.trim()) {
+      toast.error("URL tidak boleh kosong");
+      return;
+    }
+    if (!editUrl.includes("instagram.com")) {
+      toast.error("URL harus dari instagram.com");
+      return;
+    }
+    const payload = {};
+    if (editUrl.trim() !== editTarget.url) payload.url = editUrl.trim();
+    if (editCategory !== editTarget.category) payload.category = editCategory;
+    if (editAutoReport !== editTarget.auto_report) payload.auto_report = editAutoReport;
+    if (Object.keys(payload).length === 0) {
+      toast.info("Tidak ada perubahan");
+      setShowEditDialog(false);
+      return;
+    }
+    setEditSubmitting(true);
+    try {
+      await axios.patch(`${API}/targets/${editTarget.id}`, payload);
+      toast.success("Target berhasil diupdate");
+      setShowEditDialog(false);
+      setEditTarget(null);
+      fetchTargets();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Gagal mengupdate target");
+    } finally {
+      setEditSubmitting(false);
     }
   };
 
@@ -248,6 +295,16 @@ export default function Reports() {
                           Report
                         </Button>
                         <Button
+                          data-testid={`edit-target-${t.id}`}
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openEditDialog(t)}
+                          className="gap-1 text-xs"
+                        >
+                          <PencilSimple size={14} />
+                          Edit
+                        </Button>
+                        <Button
                           data-testid={`delete-target-${t.id}`}
                           variant="outline"
                           size="sm"
@@ -336,6 +393,87 @@ export default function Reports() {
             >
               {submitting && <SpinnerGap size={14} className="animate-spin" />}
               Tambah Target
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Target Dialog */}
+      <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Chivo' }}>
+              <div className="flex items-center gap-2">
+                <PencilSimple size={24} className="text-blue-600" />
+                Edit Target
+              </div>
+            </DialogTitle>
+            <DialogDescription>
+              Edit URL, kategori, atau pengaturan auto-report untuk target ini.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div>
+              <label className="text-xs uppercase tracking-[0.2em] font-bold text-slate-500 mb-1.5 block">
+                URL Instagram
+              </label>
+              <Input
+                data-testid="edit-target-url"
+                placeholder="https://www.instagram.com/p/..."
+                value={editUrl}
+                onChange={(e) => setEditUrl(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-[0.2em] font-bold text-slate-500 mb-1.5 block">
+                Kategori Pelaporan
+              </label>
+              <Select value={editCategory} onValueChange={setEditCategory}>
+                <SelectTrigger data-testid="edit-select-category">
+                  <SelectValue placeholder="Pilih kategori" />
+                </SelectTrigger>
+                <SelectContent>
+                  {categories.map((cat) => (
+                    <SelectItem key={cat.id} value={cat.id}>
+                      {cat.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center gap-3 px-1">
+              <button
+                data-testid="edit-toggle-auto"
+                onClick={() => setEditAutoReport(!editAutoReport)}
+                className="text-slate-500 hover:text-blue-600 transition-colors"
+              >
+                {editAutoReport ? (
+                  <ToggleRight size={28} weight="fill" className="text-blue-600" />
+                ) : (
+                  <ToggleLeft size={28} weight="regular" />
+                )}
+              </button>
+              <span className="text-sm text-slate-600">
+                Aktifkan auto-report (laporan berulang otomatis)
+              </span>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              data-testid="cancel-edit-target-btn"
+              variant="outline"
+              onClick={() => setShowEditDialog(false)}
+            >
+              Batal
+            </Button>
+            <Button
+              data-testid="submit-edit-target-btn"
+              onClick={handleEdit}
+              disabled={editSubmitting}
+              className="bg-blue-600 hover:bg-blue-700 gap-2"
+            >
+              {editSubmitting && <SpinnerGap size={14} className="animate-spin" />}
+              Simpan Perubahan
             </Button>
           </DialogFooter>
         </DialogContent>

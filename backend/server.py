@@ -604,6 +604,27 @@ async def delete_target(target_id: str):
         raise HTTPException(404, "Target tidak ditemukan")
     return {"message": "Target dihapus"}
 
+@api_router.patch("/targets/{target_id}")
+async def update_target(target_id: str, data: dict):
+    target = await db.report_targets.find_one({"id": target_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Target tidak ditemukan")
+    update = {}
+    if "url" in data and data["url"] and data["url"].strip():
+        new_url = data["url"].strip()
+        parsed = parse_instagram_url(new_url)
+        update["url"] = new_url
+        update["target_type"] = parsed["type"]
+        update["display_name"] = parsed.get("display", new_url)
+    if "category" in data and data["category"]:
+        update["category"] = data["category"]
+    if "auto_report" in data and isinstance(data["auto_report"], bool):
+        update["auto_report"] = data["auto_report"]
+    if not update:
+        raise HTTPException(400, "Tidak ada data untuk diupdate")
+    await db.report_targets.update_one({"id": target_id}, {"$set": update})
+    return await db.report_targets.find_one({"id": target_id}, {"_id": 0})
+
 @api_router.patch("/targets/{target_id}/toggle-auto")
 async def toggle_auto_report(target_id: str):
     t = await db.report_targets.find_one({"id": target_id}, {"_id": 0})
