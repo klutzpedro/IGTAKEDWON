@@ -1,0 +1,83 @@
+{
+  "theme": "light",
+  "archetype": "Archetype 4 (Swiss & High-Contrast)",
+  "domain": "Dashboard/Admin Panel",
+  "colors": {
+    "background": "#FFFFFF",
+    "surface": "#F8FAFC",
+    "surface_hover": "#F1F5F9",
+    "border": "#E2E8F0",
+    "text_primary": "#0F172A",
+    "text_secondary": "#64748B",
+    "accent_primary": "#2563EB",
+    "accent_hover": "#1D4ED8",
+    "status_success": "#16A34A",
+    "status_warning": "#D97706",
+    "status_error": "#DC2626",
+    "status_info": "#0284C7"
+  },
+  "typography": {
+    "fonts": {
+      "heading": "Chivo",
+      "body": "IBM Plex Sans",
+      "mono": "JetBrains Mono"
+    },
+    "hierarchy": {
+      "h1": "text-4xl tracking-tight font-black text-slate-900",
+      "h2": "text-2xl tracking-tight font-bold text-slate-900",
+      "h3": "text-lg font-bold text-slate-800",
+      "h4": "text-base font-semibold text-slate-800",
+      "body": "text-sm text-slate-600 leading-relaxed",
+      "label": "text-xs uppercase tracking-[0.2em] font-bold text-slate-500"
+    }
+  },
+  "layout": {
+    "spacing": "Generous scaling: p-6 to p-8 for containers. Tight gaps (gap-4) for data widgets. Containers with borders must have internal padding.",
+    "grid": "Control Room Grid (grid-cols-1 md:grid-cols-3 lg:grid-cols-4) with max space utilization.",
+    "surface_strategy": "Grid Borders (The 'Technical' Look). Use flat solid surfaces, border-collapse styles where applicable, and 1px sharp borders. Radius: max 8px (rounded-md). No heavy shadows.",
+    "alignment": "Left-align dense content, numbers right-aligned in tables. F-shaped scanning structure for dashboards."
+  },
+  "components": {
+    "buttons": "Shadcn based. Sharp or slightly rounded (rounded-md). High contrast focus states. Hover must change background color explicitly.",
+    "tables": "High contrast data tables. Sticky headers. Zebra striping (bg-slate-50 for even rows). Right-aligned numbers. Clear semantic status badges (Red for fail/takedown, Green for active/success).",
+    "forms": "Shadcn components heavily customized. Flat borders. Clear focus rings (ring-blue-500). Use Shadcn select for report categories.",
+    "cards": "Cardless look or flat rectangular with 1px border-slate-200. No heavy dropshadows."
+  },
+  "motion": {
+    "hover": "Explicit text and background color changes on hover. Slight lift (-translate-y-0.5) for interactive cards.",
+    "transitions": "transition-all duration-200 ease-in-out",
+    "loading": "Subtle skeleton loaders, avoiding overly bouncy animations. Data tables should have staggered entry."
+  },
+  "icons": {
+    "library": "@phosphor-icons/react",
+    "installation": "yarn add @phosphor-icons/react",
+    "usage": "Use Phosphor icons with 'duotone' or 'regular' weights. Crucial for dense dashboard data."
+  },
+  "media": {
+    "image_urls": [
+      {
+        "url": "https://images.unsplash.com/photo-1706694668159-42105c6c99c9?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNDR8MHwxfHNlYXJjaHw0fHxwb3J0cmFpdCUyMGF2YXRhciUyMG1pbmltYWx8ZW58MHx8fHwxNzc2MDQ1MzE3fDA&ixlib=rb-4.1.0&q=85",
+        "category": "avatar",
+        "description": "Avatar for connected Instagram account 1"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1707396172424-f3293f788364?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNDR8MHwxfHNlYXJjaHwyfHxwb3J0cmFpdCUyMGF2YXRhciUyMG1pbmltYWx8ZW58MHx8fHwxNzc2MDQ1MzE3fDA&ixlib=rb-4.1.0&q=85",
+        "category": "avatar",
+        "description": "Avatar for connected Instagram account 2"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1574625370413-a04a06f08d77?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzh8MHwxfHNlYXJjaHwxfHxtaW5pbWFsaXN0JTIwd29ya3NwYWNlJTIwYnJpZ2h0JTIwbGlnaHR8ZW58MHx8fHwxNzc2MDQ1MzEzfDA&ixlib=rb-4.1.0&q=85",
+        "category": "empty_state",
+        "description": "Minimalist bright laptop workspace for empty state or welcome screen banner"
+      }
+    ]
+  },
+  "specific_instructions": {
+    "testing": "All interactive elements MUST have role-based data-testid attributes (e.g., data-testid='submit-report-button').",
+    "instagram_categories": "Include actual IG report categories in the dropdown: 'Spam', 'Nudity or sexual activity', 'Hate speech or symbols', 'Violence or dangerous organizations', 'Sale of illegal or regulated goods', 'Bullying or harassment', 'Intellectual property violation', 'Suicide or self-injury', 'Eating disorders', 'Scam or fraud', 'False information'.",
+    "dashboard_metrics": "Include 'Active Accounts', 'Reports Sent (24h)', 'Successful Takedowns', 'Failed/Retrying' in the top bento grid.",
+    "theme_rules": "Strictly LIGHT theme ('Terang'). Use high contrast. Do not use dark mode inversion. The dashboard layout should feature a left sidebar (w-64) and a right main content area with a fixed header.",
+    "file_type": "Remember to write standard .js files as frontend components, not .tsx.",
+    "state_management": "Use mock data for multiple IG accounts, report history, and the queue monitoring since it's an MVP."
+  }
+}
