@@ -741,6 +741,7 @@ async def get_dashboard_stats():
         "total_reports": total_reports, "successful_reports": success,
         "failed_reports": failed, "taken_down": taken_down,
         "recent_logs": recent, "auto_report_running": auto_report_running,
+        "monitor_running": monitor_running,
     }
 
 # --- Accounts ---
@@ -968,6 +969,204 @@ async def auto_report_status():
     return {"running": auto_report_running}
 
 
+# --- Link Monitor (check if content still exists every 3 hours) ---
+monitor_running = False
+monitor_task = None
+MONITOR_INTERVAL = 3 * 60 * 60  # 3 hours in seconds
+
+def _sync_check_url(url: str) -> dict:
+    """Check if an Instagram URL still exists. Runs in thread pool."""
+    import requests as req
+    import time
+
+    clean_url = url.split("?")[0]
+    try:
+        resp = req.get(clean_url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+        }, timeout=20, allow_redirects=True)
+
+        status_code = resp.status_code
+        final_url = resp.url
+        page_text = resp.text[:5000].lower()
+
+        # Detect if content is gone
+        if status_code == 404:
+            return {"alive": False, "reason": "404 - Halaman tidak ditemukan", "http_status": 404}
+
+        if "sorry, this page isn" in page_text or "this page isn't available" in page_text:
+            return {"alive": False, "reason": "Halaman tidak tersedia (dihapus/takedown)", "http_status": status_code}
+
+        if "content isn't available" in page_text or "konten tidak tersedia" in page_text:
+            return {"alive": False, "reason": "Konten tidak tersedia lagi", "http_status": status_code}
+
+        if "restricted" in page_text and "community guidelines" in page_text:
+            return {"alive": False, "reason": "Konten dibatasi karena melanggar pedoman komunitas", "http_status": status_code}
+
+        if "/accounts/login" in final_url and "accounts/login" not in clean_url:
+            # Redirected to login - might be private or removed
+            return {"alive": "unknown", "reason": "Redirect ke login (mungkin private/dihapus)", "http_status": status_code}
+
+        if status_code == 200:
+            # Check for actual content indicators (page already lowercased)
+            has_content = ("og:image" in page_text or "og:title" in page_text
+                          or "instapp:" in page_text or '"media"' in page_text)
+            if has_content:
+                return {"alive": True, "reason": "Konten masih ada dan bisa diakses", "http_status": 200}
+            
+            # Check for "page not available" even with 200 status
+            not_available = ("this page isn" in page_text or "halaman ini tidak" in page_text
+                            or "sorry, this page" in page_text)
+            if not_available:
+                return {"alive": False, "reason": "Halaman tidak tersedia (kemungkinan dihapus)", "http_status": 200}
+            
+            return {"alive": True, "reason": "HTTP 200 - halaman bisa diakses", "http_status": 200}
+
+        return {"alive": "unknown", "reason": f"HTTP {status_code}", "http_status": status_code}
+
+    except req.exceptions.Timeout:
+        return {"alive": "unknown", "reason": "Timeout - Instagram tidak merespons", "http_status": 0}
+    except Exception as e:
+        return {"alive": "unknown", "reason": f"Error: {str(e)[:150]}", "http_status": 0}
+
+
+async def monitor_worker():
+    """Background worker - checks all targets every 3 hours."""
+    global monitor_running
+    logger.info("Monitor worker started - checking every 3 hours")
+
+    while monitor_running:
+        try:
+            targets = await db.report_targets.find(
+                {"status": {"$ne": "taken_down"}}, {"_id": 0}
+            ).to_list(200)
+
+            if not targets:
+                await asyncio.sleep(60)
+                continue
+
+            logger.info(f"Monitor: checking {len(targets)} targets...")
+            loop = asyncio.get_event_loop()
+
+            for target in targets:
+                if not monitor_running:
+                    break
+
+                result = await loop.run_in_executor(ig_executor, _sync_check_url, target["url"])
+
+                check_doc = {
+                    "id": str(uuid.uuid4()),
+                    "target_id": target["id"],
+                    "alive": result["alive"],
+                    "reason": result["reason"],
+                    "http_status": result["http_status"],
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                }
+                await db.monitor_checks.insert_one(check_doc)
+
+                # Auto-update target status if confirmed taken down
+                if result["alive"] is False:
+                    await db.report_targets.update_one(
+                        {"id": target["id"]},
+                        {"$set": {
+                            "status": "taken_down",
+                            "link_status": "taken_down",
+                            "last_checked_at": check_doc["checked_at"],
+                            "last_check_reason": result["reason"],
+                        }}
+                    )
+                    logger.info(f"Monitor: {target['display_name']} -> TAKEN DOWN!")
+                else:
+                    await db.report_targets.update_one(
+                        {"id": target["id"]},
+                        {"$set": {
+                            "link_status": "alive" if result["alive"] is True else "unknown",
+                            "last_checked_at": check_doc["checked_at"],
+                            "last_check_reason": result["reason"],
+                        }}
+                    )
+                    logger.info(f"Monitor: {target['display_name']} -> {'MASIH ADA' if result['alive'] else 'UNKNOWN'}")
+
+                await asyncio.sleep(5)  # Small delay between checks
+
+            # Wait 3 hours before next check cycle
+            logger.info(f"Monitor: cycle complete. Next check in 3 hours.")
+            await asyncio.sleep(MONITOR_INTERVAL)
+
+        except Exception as e:
+            logger.error(f"Monitor worker error: {e}")
+            await asyncio.sleep(60)
+
+
+@api_router.post("/monitor/start")
+async def start_monitor():
+    global monitor_running, monitor_task
+    if monitor_running:
+        return {"message": "Monitor sudah berjalan"}
+    monitor_running = True
+    monitor_task = asyncio.create_task(monitor_worker())
+    return {"message": "Monitor dimulai - cek setiap 3 jam"}
+
+@api_router.post("/monitor/stop")
+async def stop_monitor():
+    global monitor_running, monitor_task
+    monitor_running = False
+    if monitor_task:
+        monitor_task.cancel()
+        monitor_task = None
+    return {"message": "Monitor dihentikan"}
+
+@api_router.get("/monitor/status")
+async def monitor_status():
+    return {"running": monitor_running}
+
+@api_router.post("/monitor/check-now")
+async def check_now():
+    """Manually trigger a check for all targets right now."""
+    targets = await db.report_targets.find({"status": {"$ne": "taken_down"}}, {"_id": 0}).to_list(200)
+    if not targets:
+        return {"message": "Tidak ada target untuk dicek", "results": []}
+
+    loop = asyncio.get_event_loop()
+    results = []
+    for target in targets:
+        result = await loop.run_in_executor(ig_executor, _sync_check_url, target["url"])
+        check_doc = {
+            "id": str(uuid.uuid4()),
+            "target_id": target["id"],
+            "alive": result["alive"],
+            "reason": result["reason"],
+            "http_status": result["http_status"],
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.monitor_checks.insert_one(check_doc)
+
+        if result["alive"] is False:
+            await db.report_targets.update_one({"id": target["id"]}, {"$set": {
+                "status": "taken_down", "link_status": "taken_down",
+                "last_checked_at": check_doc["checked_at"],
+                "last_check_reason": result["reason"],
+            }})
+        else:
+            await db.report_targets.update_one({"id": target["id"]}, {"$set": {
+                "link_status": "alive" if result["alive"] is True else "unknown",
+                "last_checked_at": check_doc["checked_at"],
+                "last_check_reason": result["reason"],
+            }})
+
+        results.append({"target": target["display_name"], **result})
+
+    return {"message": f"{len(results)} target dicek", "results": results}
+
+@api_router.get("/monitor/checks/{target_id}")
+async def get_monitor_checks(target_id: str, limit: int = 20):
+    checks = await db.monitor_checks.find(
+        {"target_id": target_id}, {"_id": 0}
+    ).sort("checked_at", -1).to_list(limit)
+    return checks
+
+
 app.include_router(api_router)
 app.add_middleware(CORSMiddleware, allow_credentials=True,
     allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
@@ -975,7 +1174,8 @@ app.add_middleware(CORSMiddleware, allow_credentials=True,
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    global auto_report_running
+    global auto_report_running, monitor_running
     auto_report_running = False
+    monitor_running = False
     ig_executor.shutdown(wait=False)
     client.close()
