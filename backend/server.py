@@ -377,11 +377,21 @@ def _sync_report(cookies: dict, target_url: str, category: str) -> dict:
                             continue
 
                     if not report_found:
-                        # Instagram web might not show Report - try via URL-based reporting
+                        # Capture screenshot of what's visible as proof that we tried
+                        screenshot_name = f"noreport_{parsed.get('shortcode', 'unknown')}_{int(time.time())}.png"
+                        screenshot_path = f"/app/backend/screenshots/{screenshot_name}"
+                        try:
+                            page.screenshot(path=screenshot_path, full_page=False)
+                        except:
+                            pass
                         browser.close()
-                        return _sync_report_via_help_form(cookies, target_url, category, parsed)
+                        return {
+                            "status": "failed",
+                            "message": "Tombol 'Report' tidak tersedia di menu Instagram web. Instagram tidak menampilkan opsi Report untuk session ini. Saran: laporkan secara manual via app Instagram.",
+                            "screenshot": screenshot_name
+                        }
 
-                    # Click through report reason flow
+                    # Report button WAS found and clicked - proceed with reason selection
                     reason_map = {
                         "false_information": ["false", "palsu", "misinformation"],
                         "hate_speech": ["hate", "kebencian"],
@@ -419,8 +429,16 @@ def _sync_report(cookies: dict, target_url: str, category: str) -> dict:
                         except:
                             continue
 
+                    # Capture screenshot as proof
+                    screenshot_name = f"report_{parsed.get('shortcode', 'unknown')}_{int(time.time())}.png"
+                    screenshot_path = f"/app/backend/screenshots/{screenshot_name}"
+                    try:
+                        page.screenshot(path=screenshot_path, full_page=False)
+                    except:
+                        screenshot_path = ""
+
                     browser.close()
-                    return {"status": "success", "message": f"Report dikirim via browser untuk {parsed.get('display', '')}"}
+                    return {"status": "success", "message": f"Report dikirim via browser untuk {parsed.get('display', '')}", "screenshot": screenshot_name}
 
                 elif parsed["type"] == "profile":
                     try:
@@ -666,14 +684,20 @@ async def auto_report_worker():
                         "id": str(uuid.uuid4()), "target_id": target["id"],
                         "account_username": account["username"], "status": result["status"],
                         "message": result["message"], "category": target.get("category", "spam"),
+                        "screenshot": result.get("screenshot", ""),
                         "created_at": datetime.now(timezone.utc).isoformat()
                     }
                     await db.report_logs.insert_one(log_doc)
-                    await db.report_targets.update_one({"id": target["id"]}, {"$set": {
-                        "total_reports_sent": target.get("total_reports_sent", 0) + 1,
-                        "last_report_at": datetime.now(timezone.utc).isoformat(),
-                        "status": "reported" if result["status"] == "success" else "failed",
-                    }})
+                    # Only increment for success
+                    if result["status"] == "success":
+                        await db.report_targets.update_one({"id": target["id"]}, {"$inc": {"total_reports_sent": 1}, "$set": {
+                            "last_report_at": datetime.now(timezone.utc).isoformat(),
+                            "status": "reported",
+                        }})
+                    else:
+                        await db.report_targets.update_one({"id": target["id"]}, {"$set": {
+                            "last_report_at": datetime.now(timezone.utc).isoformat(),
+                        }})
                     await asyncio.sleep(10)
             await asyncio.sleep(60)
         except Exception as e:
@@ -683,9 +707,18 @@ async def auto_report_worker():
 
 # ==================== API ENDPOINTS ====================
 
+from fastapi.responses import FileResponse
+
 @api_router.get("/")
 async def root():
     return {"message": "Instagram Report Automation API"}
+
+@api_router.get("/screenshots/{filename}")
+async def get_screenshot(filename: str):
+    filepath = f"/app/backend/screenshots/{filename}"
+    if not os.path.exists(filepath):
+        raise HTTPException(404, "Screenshot tidak ditemukan")
+    return FileResponse(filepath, media_type="image/png")
 
 @api_router.get("/report-categories")
 async def get_report_categories():
@@ -888,19 +921,22 @@ async def manual_report(target_id: str):
             "id": str(uuid.uuid4()), "target_id": target["id"],
             "account_username": account["username"], "status": result["status"],
             "message": result["message"], "category": target.get("category", "spam"),
+            "screenshot": result.get("screenshot", ""),
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         await db.report_logs.insert_one(log_doc)
         results.append(result)
 
-    total_sent = target.get("total_reports_sent", 0) + len(results)
     sc = sum(1 for r in results if r["status"] == "success")
+    # Only increment counter for successful reports
+    inc_val = sc
+    new_total = target.get("total_reports_sent", 0) + inc_val
     await db.report_targets.update_one({"id": target_id}, {"$set": {
-        "total_reports_sent": total_sent,
+        "total_reports_sent": new_total,
         "last_report_at": datetime.now(timezone.utc).isoformat(),
         "status": "reported" if sc > 0 else "failed"
     }})
-    return {"results": results, "total_sent": total_sent}
+    return {"results": results, "total_sent": new_total, "success_count": sc, "fail_count": len(results) - sc}
 
 # --- Report Logs ---
 @api_router.get("/reports")

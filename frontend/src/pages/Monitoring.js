@@ -9,6 +9,7 @@ import {
   ListChecks,
   Eye,
   SpinnerGap,
+  Image,
 } from "@phosphor-icons/react";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
@@ -249,7 +250,14 @@ export default function Monitoring() {
             <DialogTitle style={{ fontFamily: 'Chivo' }}>
               Log Pelaporan: {selectedTarget?.display_name}
             </DialogTitle>
-            <DialogDescription>{selectedTarget?.url}</DialogDescription>
+            <DialogDescription>
+              {selectedTarget?.url}
+              <span className="block mt-1 text-xs">
+                Berhasil: <strong className="text-green-600">{targetLogs.filter(l => l.status === "success").length}</strong> | 
+                Gagal: <strong className="text-red-500">{targetLogs.filter(l => l.status !== "success").length}</strong> | 
+                Total percobaan: {targetLogs.length}
+              </span>
+            </DialogDescription>
           </DialogHeader>
           <Table>
             <TableHeader>
@@ -258,12 +266,13 @@ export default function Monitoring() {
                 <TableHead>Akun</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Pesan</TableHead>
+                <TableHead>Bukti</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {targetLogs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={4} className="text-center py-6 text-slate-400 text-sm">
+                  <TableCell colSpan={5} className="text-center py-6 text-slate-400 text-sm">
                     Belum ada log untuk target ini.
                   </TableCell>
                 </TableRow>
@@ -284,8 +293,24 @@ export default function Monitoring() {
                         {log.status === "success" ? "Berhasil" : "Gagal"}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-xs text-slate-500 max-w-[250px] truncate">
+                    <TableCell className="text-xs text-slate-500 max-w-[200px] truncate">
                       {log.message}
+                    </TableCell>
+                    <TableCell>
+                      {log.screenshot ? (
+                        <a
+                          href={`${process.env.REACT_APP_BACKEND_URL}/api/screenshots/${log.screenshot}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          data-testid={`screenshot-link-${log.id}`}
+                          className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 hover:underline"
+                        >
+                          <Image size={12} />
+                          Lihat
+                        </a>
+                      ) : (
+                        <span className="text-xs text-slate-300">—</span>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))
