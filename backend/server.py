@@ -290,32 +290,238 @@ def _sync_resend_challenge(cl, challenge_path: str) -> dict:
         return {"status": "failed", "message": f"Gagal kirim ulang: {str(e)[:200]}"}
 
 
-def _sync_report(cl, target_url: str, category: str) -> dict:
-    """Synchronous report execution - runs in thread pool."""
+def _sync_report(cookies: dict, target_url: str, category: str) -> dict:
+    """Report via browser automation using session cookies from DB."""
+    from playwright.sync_api import sync_playwright
+    import time
+
     try:
         parsed = parse_instagram_url(target_url)
-        reason_id = CATEGORY_TO_REASON_ID.get(category, 1)
 
-        if parsed["type"] in ("post", "reel"):
-            media_pk = cl.media_pk_from_code(parsed["shortcode"])
-            cl.private_request(f"media/{media_pk}/flag_media/",
-                data={"reason_id": str(reason_id), "source_name": "feed_contextual_chain"}, with_signature=False)
-            return {"status": "success", "message": f"Reported media {parsed['shortcode']}"}
+        session_id = cookies.get("sessionid", "")
+        csrf_token = cookies.get("csrftoken", "")
+        ds_user_id = str(cookies.get("ds_user_id", ""))
 
-        elif parsed["type"] == "profile":
-            user_info = cl.user_info_by_username(parsed["username"])
-            cl.private_request(f"users/{user_info.pk}/flag_user/",
-                data={"reason_id": str(reason_id), "source_name": "profile"}, with_signature=False)
-            return {"status": "success", "message": f"Reported @{parsed['username']}"}
+        if not session_id:
+            return {"status": "failed", "message": "Session tidak tersedia. Login ulang diperlukan."}
 
-        elif parsed["type"] == "story":
-            cl.private_request(f"media/{parsed['story_id']}/flag_media/",
-                data={"reason_id": str(reason_id), "source_name": "reel_feed_timeline"}, with_signature=False)
-            return {"status": "success", "message": f"Reported story @{parsed.get('username','')}"}
+        clean_url = target_url.split("?")[0]
 
-        return {"status": "failed", "message": "Tipe target tidak didukung"}
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+                executable_path="/pw-browsers/chromium-1208/chrome-linux/chrome"
+            )
+            ctx = browser.new_context(
+                viewport={"width": 1280, "height": 900},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+
+            all_cookies = [
+                {"name": "sessionid", "value": session_id, "domain": ".instagram.com", "path": "/"},
+                {"name": "csrftoken", "value": csrf_token, "domain": ".instagram.com", "path": "/"},
+                {"name": "ds_user_id", "value": ds_user_id, "domain": ".instagram.com", "path": "/"},
+            ]
+            for k in ["ig_did", "mid", "rur", "ig_nrcb"]:
+                if cookies.get(k):
+                    all_cookies.append({"name": k, "value": cookies[k], "domain": ".instagram.com", "path": "/"})
+            ctx.add_cookies(all_cookies)
+
+            page = ctx.new_page()
+
+            try:
+                # Visit homepage first to establish session
+                page.goto("https://www.instagram.com/", wait_until="domcontentloaded", timeout=20000)
+                time.sleep(2)
+
+                # Navigate to target
+                page.goto(clean_url, wait_until="domcontentloaded", timeout=20000)
+                time.sleep(3)
+
+                if "login" in page.url.lower():
+                    browser.close()
+                    return {"status": "failed", "message": "Session expired di browser. Login ulang diperlukan."}
+
+                # Close any popups
+                for sel in ['button:has-text("Not Now")', 'button:has-text("Not now")', 'svg[aria-label="Close"]']:
+                    try:
+                        el = page.locator(sel).first
+                        if el.is_visible(timeout=1000):
+                            el.click(force=True)
+                            time.sleep(0.5)
+                    except:
+                        pass
+
+                if parsed["type"] in ("post", "reel"):
+                    # Click More options (three dots)
+                    try:
+                        more = page.locator('svg[aria-label="More options"]').first
+                        more.click(force=True)
+                        time.sleep(2)
+                    except Exception as e:
+                        browser.close()
+                        return {"status": "failed", "message": f"Tidak bisa klik menu: {str(e)[:150]}"}
+
+                    # Look for Report button
+                    report_found = False
+                    for sel in ['button:has-text("Report")', 'button:has-text("Laporkan")', 'text="Report"', 'text="Laporkan"']:
+                        try:
+                            el = page.locator(sel).first
+                            if el.is_visible(timeout=1500):
+                                el.click()
+                                report_found = True
+                                time.sleep(2)
+                                break
+                        except:
+                            continue
+
+                    if not report_found:
+                        # Instagram web might not show Report - try via URL-based reporting
+                        browser.close()
+                        return _sync_report_via_help_form(cookies, target_url, category, parsed)
+
+                    # Click through report reason flow
+                    reason_map = {
+                        "false_information": ["false", "palsu", "misinformation"],
+                        "hate_speech": ["hate", "kebencian"],
+                        "spam": ["spam", "junk"],
+                        "nudity": ["nudity", "sexual"],
+                        "violence": ["violence", "dangerous"],
+                        "bullying": ["bully", "harassment"],
+                        "scam": ["scam", "fraud"],
+                    }
+                    keywords = reason_map.get(category, ["spam", "inappropriate"])
+
+                    # Click matching reason
+                    try:
+                        buttons = page.locator('button, [role="button"], [role="menuitem"]').all()
+                        for btn in buttons:
+                            try:
+                                txt = (btn.inner_text() or "").lower()
+                                for kw in keywords:
+                                    if kw in txt:
+                                        btn.click()
+                                        time.sleep(1.5)
+                                        break
+                            except:
+                                continue
+                    except:
+                        pass
+
+                    # Click submit/next buttons
+                    for submit in ["Submit", "Kirim", "Done", "Selesai", "Next", "Lanjut", "Close", "Tutup"]:
+                        try:
+                            btn = page.locator(f'button:has-text("{submit}")').first
+                            if btn.is_visible(timeout=1000):
+                                btn.click()
+                                time.sleep(1)
+                        except:
+                            continue
+
+                    browser.close()
+                    return {"status": "success", "message": f"Report dikirim via browser untuk {parsed.get('display', '')}"}
+
+                elif parsed["type"] == "profile":
+                    try:
+                        opts = page.locator('svg[aria-label="Options"], svg[aria-label="Opsi"]').first
+                        opts.click(force=True)
+                        time.sleep(2)
+                    except:
+                        browser.close()
+                        return {"status": "failed", "message": "Tidak bisa buka menu profil."}
+
+                    report_found = False
+                    for sel in ['button:has-text("Report")', 'button:has-text("Laporkan")']:
+                        try:
+                            el = page.locator(sel).first
+                            if el.is_visible(timeout=1500):
+                                el.click()
+                                report_found = True
+                                time.sleep(2)
+                                break
+                        except:
+                            continue
+
+                    if not report_found:
+                        browser.close()
+                        return _sync_report_via_help_form(cookies, target_url, category, parsed)
+
+                    for submit in ["Submit", "Kirim", "Next", "Lanjut"]:
+                        try:
+                            btn = page.locator(f'button:has-text("{submit}")').first
+                            if btn.is_visible(timeout=1000):
+                                btn.click()
+                                time.sleep(1)
+                        except:
+                            continue
+
+                    browser.close()
+                    return {"status": "success", "message": f"Report dikirim untuk @{parsed.get('username', '')}"}
+
+                browser.close()
+                return {"status": "failed", "message": "Tipe target belum didukung."}
+
+            except Exception as e:
+                browser.close()
+                return {"status": "failed", "message": f"Browser error: {str(e)[:250]}"}
+
     except Exception as e:
-        return {"status": "failed", "message": str(e)[:300]}
+        return {"status": "failed", "message": f"Error: {str(e)[:300]}"}
+
+
+def _sync_report_via_help_form(cookies: dict, target_url: str, category: str, parsed: dict) -> dict:
+    """Fallback: report via Instagram web API."""
+    try:
+        import requests as req
+
+        session = req.Session()
+
+        # Set session cookies
+        for k, v in cookies.items():
+            if isinstance(v, str):
+                session.cookies.set(k, v, domain=".instagram.com")
+
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "X-CSRFToken": cookies.get("csrftoken", ""),
+            "X-Instagram-AJAX": "1",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": target_url,
+        })
+
+        reason_map = {
+            "spam": 1, "nudity": 2, "hate_speech": 4, "violence": 5,
+            "illegal_sales": 6, "bullying": 7, "ip_violation": 8,
+            "suicide": 9, "eating_disorders": 10, "scam": 11,
+            "false_information": 12, "dont_like": 0,
+        }
+        reason_id = reason_map.get(category, 1)
+
+        # Try web API reporting endpoints
+        web_endpoints = [
+            f"https://www.instagram.com/api/v1/media/{parsed.get('shortcode', '')}/report/",
+            f"https://www.instagram.com/web/report/",
+        ]
+
+        for ep in web_endpoints:
+            try:
+                resp = session.post(ep, data={
+                    "reason_id": str(reason_id),
+                    "source_name": "web_report",
+                }, timeout=15)
+                if resp.status_code == 200:
+                    return {"status": "success", "message": f"Report dikirim via web form: {parsed.get('display', '')}"}
+            except:
+                continue
+
+        return {
+            "status": "failed",
+            "message": "Report via browser dan web form gagal. Instagram membatasi reporting dari server. Saran: gunakan proxy residential atau report secara manual via app Instagram, lalu update status di monitoring."
+        }
+
+    except Exception as e:
+        return {"status": "failed", "message": f"Fallback report gagal: {str(e)[:200]}"}
 
 
 # ============ ASYNC wrappers ============
@@ -400,14 +606,38 @@ async def submit_challenge(account_id: str, code: str) -> dict:
 
 
 async def perform_report(target: dict, account: dict) -> dict:
-    cl = ig_clients.get(account["id"])
-    if not cl:
-        return {"status": "failed", "message": "Client not available - login required"}
+    # Get session cookies directly from DB (survives server restart)
+    session_doc = await db.ig_sessions.find_one({"account_id": account["id"]}, {"_id": 0})
+    
+    if not session_doc or not session_doc.get("settings"):
+        return {"status": "failed", "message": "Session tidak tersedia. Login ulang diperlukan."}
+    
+    settings = session_doc["settings"]
+    # instagrapi stores session in authorization_data, not cookies
+    auth_data = settings.get("authorization_data", {})
+    cookies = settings.get("cookies", {})
+    
+    session_id = auth_data.get("sessionid", "") or cookies.get("sessionid", "")
+    ds_user_id = str(auth_data.get("ds_user_id", "") or cookies.get("ds_user_id", ""))
+    mid = settings.get("mid", "")
+    
+    if not session_id:
+        return {"status": "failed", "message": "Session cookies tidak ada. Login ulang diperlukan."}
+    
+    # Build cookies dict for browser
+    browser_cookies = {
+        "sessionid": session_id,
+        "ds_user_id": ds_user_id,
+        "csrftoken": cookies.get("csrftoken", ""),
+        "mid": mid,
+        "ig_did": settings.get("ig_did", ""),
+        "rur": cookies.get("rur", ""),
+    }
 
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         ig_executor,
-        _sync_report, cl, target["url"], target.get("category", "spam")
+        _sync_report, browser_cookies, target["url"], target.get("category", "spam")
     )
 
 
