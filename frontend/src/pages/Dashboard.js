@@ -281,8 +281,9 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
           <TableHeader>
             <TableRow className="bg-slate-50">
               <TableHead>Waktu</TableHead>
-              <TableHead>Akun</TableHead>
+              <TableHead>Reporter</TableHead>
               <TableHead>Kategori</TableHead>
+              <TableHead>Target Link</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Pesan</TableHead>
             </TableRow>
@@ -290,7 +291,7 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
           <TableBody>
             {(!stats?.recent_logs || stats.recent_logs.length === 0) ? (
               <TableRow>
-                <TableCell colSpan={5} className="text-center py-10 text-slate-400">
+                <TableCell colSpan={6} className="text-center py-10 text-slate-400">
                   Belum ada aktivitas. Mulai tambahkan akun dan target.
                 </TableCell>
               </TableRow>
@@ -312,6 +313,21 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
                     </span>
                   </TableCell>
                   <TableCell>
+                    {log.target_display ? (
+                      <a
+                        href={log.target_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-600 hover:underline truncate block max-w-[150px]"
+                        title={log.target_url}
+                      >
+                        {log.target_display}
+                      </a>
+                    ) : (
+                      <span className="text-xs text-slate-400">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
                     <Badge
                       variant={log.status === "success" ? "default" : "destructive"}
                       className={log.status === "success" ? "bg-green-600 hover:bg-green-700" : ""}
@@ -319,7 +335,7 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
                       {log.status === "success" ? "Berhasil" : "Gagal"}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-xs text-slate-500 max-w-[200px] truncate">
+                  <TableCell className="text-xs text-slate-500 max-w-[180px] truncate">
                     {log.message}
                   </TableCell>
                 </TableRow>

@@ -792,6 +792,8 @@ async def auto_report_worker():
                     log_doc = {
                         "id": str(uuid.uuid4()),
                         "target_id": target["id"],
+                        "target_display": target.get("display_name", ""),
+                        "target_url": target.get("url", ""),
                         "account_username": account["username"],
                         "status": result["status"],
                         "message": result["message"],
@@ -1076,6 +1078,8 @@ async def manual_report(target_id: str):
         result = await perform_report(target, account)
         log_doc = {
             "id": str(uuid.uuid4()), "target_id": target["id"],
+            "target_display": target.get("display_name", ""),
+            "target_url": target.get("url", ""),
             "account_username": account["username"], "status": result["status"],
             "message": result["message"], "category": target.get("category", "spam"),
             "screenshot": result.get("screenshot", ""),
