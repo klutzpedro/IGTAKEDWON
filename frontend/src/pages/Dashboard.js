@@ -7,6 +7,9 @@ import {
   Warning,
   ArrowClockwise,
   Lightning,
+  Timer,
+  Hand,
+  Pause,
 } from "@phosphor-icons/react";
 import { StatsCard } from "../components/StatsCard";
 import { Badge } from "../components/ui/badge";
@@ -14,6 +17,9 @@ import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from "../components/ui/table";
 import { Button } from "../components/ui/button";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "../components/ui/dropdown-menu";
 import { toast } from "sonner";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -21,12 +27,23 @@ const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [autoMode, setAutoMode] = useState("manual");
+  const [cycleCount, setCycleCount] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const [resumeAt, setResumeAt] = useState("");
 
   const fetchStats = async () => {
     try {
-      const { data } = await axios.get(`${API}/dashboard/stats`);
-      setStats(data);
-      setAutoReportRunning(data.auto_report_running);
+      const [statsRes, arRes] = await Promise.all([
+        axios.get(`${API}/dashboard/stats`),
+        axios.get(`${API}/auto-report/status`),
+      ]);
+      setStats(statsRes.data);
+      setAutoReportRunning(statsRes.data.auto_report_running);
+      setAutoMode(arRes.data.mode || "manual");
+      setCycleCount(arRes.data.cycle_count || 0);
+      setPaused(arRes.data.paused || false);
+      setResumeAt(arRes.data.resume_at || "");
     } catch (e) {
       console.error(e);
     } finally {
@@ -36,22 +53,34 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
 
   useEffect(() => {
     fetchStats();
-    const interval = setInterval(fetchStats, 15000);
+    const interval = setInterval(fetchStats, 10000);
     return () => clearInterval(interval);
   }, []);
 
-  const toggleAutoReport = async () => {
+  const startAutoReport = async (mode) => {
     try {
-      if (autoReportRunning) {
-        await axios.post(`${API}/auto-report/stop`);
-        toast.success("Auto-report dihentikan");
-      } else {
-        await axios.post(`${API}/auto-report/start`);
-        toast.success("Auto-report dimulai");
-      }
-      setAutoReportRunning(!autoReportRunning);
+      await axios.post(`${API}/auto-report/start`, { mode });
+      setAutoReportRunning(true);
+      setAutoMode(mode);
+      toast.success(
+        mode === "variasi"
+          ? "Auto-report (Variasi) dimulai - jeda otomatis setiap 15-20 report berhasil"
+          : "Auto-report (Manual) dimulai - berjalan terus sampai distop manual"
+      );
     } catch (e) {
-      toast.error("Gagal mengubah status auto-report");
+      toast.error("Gagal memulai auto-report");
+    }
+  };
+
+  const stopAutoReport = async () => {
+    try {
+      await axios.post(`${API}/auto-report/stop`);
+      setAutoReportRunning(false);
+      setCycleCount(0);
+      setPaused(false);
+      toast.success("Auto-report dihentikan");
+    } catch (e) {
+      toast.error("Gagal menghentikan auto-report");
     }
   };
 
@@ -78,16 +107,90 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
             Ringkasan aktivitas pelaporan Instagram
           </p>
         </div>
-        <Button
-          data-testid="toggle-auto-report-btn"
-          onClick={toggleAutoReport}
-          variant={autoReportRunning ? "destructive" : "default"}
-          className="gap-2"
-        >
-          <Lightning size={16} weight="fill" />
-          {autoReportRunning ? "Stop Auto-Report" : "Start Auto-Report"}
-        </Button>
+        <div className="flex items-center gap-2">
+          {autoReportRunning ? (
+            <Button
+              data-testid="stop-auto-report-btn"
+              onClick={stopAutoReport}
+              variant="destructive"
+              className="gap-2"
+            >
+              <Lightning size={16} weight="fill" />
+              Stop Auto-Report
+            </Button>
+          ) : (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button data-testid="start-auto-report-btn" className="gap-2 bg-blue-600 hover:bg-blue-700">
+                  <Lightning size={16} weight="fill" />
+                  Start Auto-Report
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-72">
+                <DropdownMenuItem
+                  data-testid="start-variasi-btn"
+                  onClick={() => startAutoReport("variasi")}
+                  className="flex items-start gap-3 p-3 cursor-pointer"
+                >
+                  <Timer size={20} weight="duotone" className="text-blue-600 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <p className="text-sm font-semibold text-slate-800">Variasi</p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Jeda otomatis setiap 15-20 report berhasil, lanjut setelah 1 jam
+                    </p>
+                  </div>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  data-testid="start-manual-btn"
+                  onClick={() => startAutoReport("manual")}
+                  className="flex items-start gap-3 p-3 cursor-pointer"
+                >
+                  <Hand size={20} weight="duotone" className="text-amber-600 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <p className="text-sm font-semibold text-slate-800">Manual</p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Berjalan terus tanpa jeda, stop hanya secara manual
+                    </p>
+                  </div>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
       </div>
+
+      {/* Auto-report status banner */}
+      {autoReportRunning && (
+        <div className={`rounded-md p-4 flex items-center justify-between ${
+          paused ? "bg-amber-50 border border-amber-200" : "bg-blue-50 border border-blue-200"
+        }`}>
+          <div className="flex items-center gap-3">
+            <div className={`w-2.5 h-2.5 rounded-full ${paused ? "bg-amber-500" : "bg-blue-500 animate-pulse-dot"}`} />
+            <div>
+              <p className="text-sm font-semibold text-slate-800">
+                {paused ? "Auto-Report Dijeda" : "Auto-Report Aktif"}
+                <span className="ml-2 text-xs font-normal px-2 py-0.5 rounded bg-slate-200 text-slate-600">
+                  {autoMode === "variasi" ? "Mode Variasi" : "Mode Manual"}
+                </span>
+              </p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {paused
+                  ? `Dijeda setelah ${cycleCount} report berhasil. Lanjut otomatis ${resumeAt ? "pukul " + new Date(resumeAt).toLocaleTimeString("id-ID") : "dalam 1 jam"}`
+                  : autoMode === "variasi"
+                    ? `${cycleCount}/15-20 report berhasil dalam siklus ini. Jeda otomatis saat tercapai.`
+                    : "Berjalan terus sampai dihentikan manual."
+                }
+              </p>
+            </div>
+          </div>
+          {paused && (
+            <Badge variant="outline" className="border-amber-300 text-amber-700 gap-1">
+              <Pause size={12} weight="fill" />
+              Jeda 1 Jam
+            </Badge>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatsCard
@@ -158,7 +261,6 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
                 <TableRow
                   key={log.id || idx}
                   className={idx % 2 === 0 ? "" : "bg-slate-50"}
-                  style={{ animationDelay: `${idx * 50}ms` }}
                 >
                   <TableCell className="text-xs font-mono text-slate-500">
                     {new Date(log.created_at).toLocaleString("id-ID")}

@@ -736,23 +736,33 @@ async def perform_report(target: dict, account: dict) -> dict:
 # --- Auto Report ---
 auto_report_running = False
 auto_report_task = None
+auto_report_mode = "manual"  # "manual" or "variasi"
+auto_report_cycle_count = 0  # track successes in current cycle
 
 async def auto_report_worker():
-    global auto_report_running
+    global auto_report_running, auto_report_cycle_count
+    import random
+    
+    cycle_success = 0
+    cycle_limit = random.randint(15, 20)  # Random between 15-20
+    logger.info(f"Auto-report worker started in '{auto_report_mode}' mode (cycle limit: {cycle_limit})")
+    
     while auto_report_running:
         try:
             targets = await db.report_targets.find(
                 {"auto_report": True, "status": {"$nin": ["taken_down"]}}, {"_id": 0}).to_list(100)
             accounts = await db.ig_accounts.find({"is_logged_in": True}, {"_id": 0}).to_list(100)
-            if not accounts:
+            if not accounts or not targets:
                 await asyncio.sleep(30)
                 continue
+            
             for target in targets:
                 if not auto_report_running:
                     break
                 for account in accounts:
                     if not auto_report_running:
                         break
+                    
                     result = await perform_report(target, account)
                     log_doc = {
                         "id": str(uuid.uuid4()), "target_id": target["id"],
@@ -762,18 +772,52 @@ async def auto_report_worker():
                         "created_at": datetime.now(timezone.utc).isoformat()
                     }
                     await db.report_logs.insert_one(log_doc)
-                    # Only increment for success
+                    
                     if result["status"] == "success":
                         await db.report_targets.update_one({"id": target["id"]}, {"$inc": {"total_reports_sent": 1}, "$set": {
-                            "last_report_at": datetime.now(timezone.utc).isoformat(),
-                            "status": "reported",
+                            "last_report_at": datetime.now(timezone.utc).isoformat(), "status": "reported",
                         }})
+                        cycle_success += 1
+                        auto_report_cycle_count = cycle_success
                     else:
                         await db.report_targets.update_one({"id": target["id"]}, {"$set": {
                             "last_report_at": datetime.now(timezone.utc).isoformat(),
                         }})
+                    
+                    # Variasi mode: pause after 15-20 successful reports
+                    if auto_report_mode == "variasi" and cycle_success >= cycle_limit:
+                        logger.info(f"Variasi mode: {cycle_success} reports berhasil. Jeda 1 jam...")
+                        # Save pause state
+                        await db.auto_report_state.update_one(
+                            {"key": "state"}, {"$set": {
+                                "paused": True, "cycle_success": cycle_success,
+                                "paused_at": datetime.now(timezone.utc).isoformat(),
+                                "resume_at": (datetime.now(timezone.utc) + __import__('datetime').timedelta(hours=1)).isoformat(),
+                            }}, upsert=True)
+                        
+                        # Wait 1 hour
+                        for i in range(60):  # 60 x 60s = 1 hour
+                            if not auto_report_running:
+                                break
+                            await asyncio.sleep(60)
+                        
+                        # Reset cycle
+                        cycle_success = 0
+                        cycle_limit = random.randint(15, 20)
+                        auto_report_cycle_count = 0
+                        logger.info(f"Variasi mode: Jeda selesai. Lanjut dengan limit {cycle_limit}")
+                        
+                        await db.auto_report_state.update_one(
+                            {"key": "state"}, {"$set": {"paused": False}}, upsert=True)
+                        break  # Break inner loop to re-fetch targets
+                    
                     await asyncio.sleep(10)
-            await asyncio.sleep(60)
+                
+                # Check if we broke out of inner loop for variasi pause
+                if auto_report_mode == "variasi" and cycle_success >= cycle_limit:
+                    break
+            
+            await asyncio.sleep(30)
         except Exception as e:
             logger.error(f"Auto-report worker error: {e}")
             await asyncio.sleep(30)
@@ -815,6 +859,8 @@ async def get_dashboard_stats():
         "total_reports": total_reports, "successful_reports": success,
         "failed_reports": failed, "taken_down": taken_down,
         "recent_logs": recent, "auto_report_running": auto_report_running,
+        "auto_report_mode": auto_report_mode,
+        "auto_report_cycle_count": auto_report_cycle_count,
         "monitor_running": monitor_running,
     }
 
@@ -1020,27 +1066,46 @@ async def list_reports(limit: int = 50, target_id: Optional[str] = None):
     return await db.report_logs.find(q, {"_id": 0}).sort("created_at", -1).to_list(limit)
 
 # --- Auto Report ---
+class AutoReportStart(BaseModel):
+    mode: str = "manual"  # "manual" or "variasi"
+
 @api_router.post("/auto-report/start")
-async def start_auto_report():
-    global auto_report_running, auto_report_task
+async def start_auto_report(data: AutoReportStart):
+    global auto_report_running, auto_report_task, auto_report_mode, auto_report_cycle_count
     if auto_report_running:
-        return {"message": "Sudah berjalan"}
+        return {"message": "Sudah berjalan", "mode": auto_report_mode}
+    if data.mode not in ("manual", "variasi"):
+        raise HTTPException(400, "Mode harus 'manual' atau 'variasi'")
+    auto_report_mode = data.mode
     auto_report_running = True
+    auto_report_cycle_count = 0
     auto_report_task = asyncio.create_task(auto_report_worker())
-    return {"message": "Auto-report dimulai"}
+    await db.auto_report_state.update_one(
+        {"key": "state"}, {"$set": {"running": True, "mode": data.mode, "paused": False, "cycle_success": 0}}, upsert=True)
+    return {"message": f"Auto-report dimulai (mode: {data.mode})", "mode": data.mode}
 
 @api_router.post("/auto-report/stop")
 async def stop_auto_report():
-    global auto_report_running, auto_report_task
+    global auto_report_running, auto_report_task, auto_report_cycle_count
     auto_report_running = False
+    auto_report_cycle_count = 0
     if auto_report_task:
         auto_report_task.cancel()
         auto_report_task = None
+    await db.auto_report_state.update_one(
+        {"key": "state"}, {"$set": {"running": False, "paused": False, "cycle_success": 0}}, upsert=True)
     return {"message": "Auto-report dihentikan"}
 
 @api_router.get("/auto-report/status")
 async def auto_report_status():
-    return {"running": auto_report_running}
+    state = await db.auto_report_state.find_one({"key": "state"}, {"_id": 0})
+    return {
+        "running": auto_report_running,
+        "mode": auto_report_mode,
+        "cycle_count": auto_report_cycle_count,
+        "paused": state.get("paused", False) if state else False,
+        "resume_at": state.get("resume_at", "") if state else "",
+    }
 
 
 # --- Link Monitor (check if content still exists every 3 hours) ---
