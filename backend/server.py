@@ -736,90 +736,126 @@ async def perform_report(target: dict, account: dict) -> dict:
 # --- Auto Report ---
 auto_report_running = False
 auto_report_task = None
-auto_report_mode = "manual"  # "manual" or "variasi"
-auto_report_cycle_count = 0  # track successes in current cycle
+auto_report_mode = "manual"
+auto_report_cycle_count = 0
 
 async def auto_report_worker():
+    """Smart round-robin: rotates accounts across targets for maximum coverage.
+    Each cycle: every account reports every target once.
+    Variasi: pause after 15-20 total successes, resume after 1 hour."""
     global auto_report_running, auto_report_cycle_count
     import random
-    
+
     cycle_success = 0
-    cycle_limit = random.randint(15, 20)  # Random between 15-20
-    logger.info(f"Auto-report worker started in '{auto_report_mode}' mode (cycle limit: {cycle_limit})")
-    
+    cycle_limit = random.randint(15, 20)
+    logger.info(f"Auto-report started: mode={auto_report_mode}, cycle_limit={cycle_limit}")
+
     while auto_report_running:
         try:
             targets = await db.report_targets.find(
                 {"auto_report": True, "status": {"$nin": ["taken_down"]}}, {"_id": 0}).to_list(100)
             accounts = await db.ig_accounts.find({"is_logged_in": True}, {"_id": 0}).to_list(100)
+
             if not accounts or not targets:
                 await asyncio.sleep(30)
                 continue
-            
-            for target in targets:
+
+            n_targets = len(targets)
+            n_accounts = len(accounts)
+            logger.info(f"Round-robin: {n_accounts} akun x {n_targets} target = {n_accounts * n_targets} kombinasi")
+
+            # Update state
+            await db.auto_report_state.update_one({"key": "state"}, {"$set": {
+                "running": True, "mode": auto_report_mode, "paused": False,
+                "active_targets": n_targets, "active_accounts": n_accounts,
+                "cycle_success": cycle_success, "cycle_limit": cycle_limit,
+            }}, upsert=True)
+
+            # Round-robin: distribute accounts across targets simultaneously
+            # Each round: account[i] reports target[(i + round) % n_targets]
+            round_num = 0
+            max_rounds = max(n_targets, n_accounts)  # Ensure all combos covered
+
+            for round_num in range(max_rounds):
                 if not auto_report_running:
                     break
-                for account in accounts:
+
+                for acc_idx, account in enumerate(accounts):
                     if not auto_report_running:
                         break
-                    
+
+                    target_idx = (acc_idx + round_num) % n_targets
+                    target = targets[target_idx]
+
                     result = await perform_report(target, account)
+
                     log_doc = {
-                        "id": str(uuid.uuid4()), "target_id": target["id"],
-                        "account_username": account["username"], "status": result["status"],
-                        "message": result["message"], "category": target.get("category", "spam"),
+                        "id": str(uuid.uuid4()),
+                        "target_id": target["id"],
+                        "account_username": account["username"],
+                        "status": result["status"],
+                        "message": result["message"],
+                        "category": target.get("category", "spam"),
                         "screenshot": result.get("screenshot", ""),
                         "created_at": datetime.now(timezone.utc).isoformat()
                     }
                     await db.report_logs.insert_one(log_doc)
-                    
+
                     if result["status"] == "success":
-                        await db.report_targets.update_one({"id": target["id"]}, {"$inc": {"total_reports_sent": 1}, "$set": {
-                            "last_report_at": datetime.now(timezone.utc).isoformat(), "status": "reported",
-                        }})
+                        await db.report_targets.update_one(
+                            {"id": target["id"]},
+                            {"$inc": {"total_reports_sent": 1},
+                             "$set": {"last_report_at": datetime.now(timezone.utc).isoformat(), "status": "reported"}})
                         cycle_success += 1
                         auto_report_cycle_count = cycle_success
                     else:
-                        await db.report_targets.update_one({"id": target["id"]}, {"$set": {
-                            "last_report_at": datetime.now(timezone.utc).isoformat(),
-                        }})
-                    
-                    # Variasi mode: pause after 15-20 successful reports
+                        await db.report_targets.update_one(
+                            {"id": target["id"]},
+                            {"$set": {"last_report_at": datetime.now(timezone.utc).isoformat()}})
+
+                    # Update live state
+                    await db.auto_report_state.update_one({"key": "state"}, {"$set": {
+                        "cycle_success": cycle_success,
+                        "last_account": account["username"],
+                        "last_target": target.get("display_name", ""),
+                    }}, upsert=True)
+
+                    # Variasi: pause after cycle_limit successes
                     if auto_report_mode == "variasi" and cycle_success >= cycle_limit:
-                        logger.info(f"Variasi mode: {cycle_success} reports berhasil. Jeda 1 jam...")
-                        # Save pause state
-                        await db.auto_report_state.update_one(
-                            {"key": "state"}, {"$set": {
-                                "paused": True, "cycle_success": cycle_success,
-                                "paused_at": datetime.now(timezone.utc).isoformat(),
-                                "resume_at": (datetime.now(timezone.utc) + __import__('datetime').timedelta(hours=1)).isoformat(),
-                            }}, upsert=True)
-                        
-                        # Wait 1 hour
-                        for i in range(60):  # 60 x 60s = 1 hour
-                            if not auto_report_running:
-                                break
-                            await asyncio.sleep(60)
-                        
-                        # Reset cycle
-                        cycle_success = 0
-                        cycle_limit = random.randint(15, 20)
-                        auto_report_cycle_count = 0
-                        logger.info(f"Variasi mode: Jeda selesai. Lanjut dengan limit {cycle_limit}")
-                        
-                        await db.auto_report_state.update_one(
-                            {"key": "state"}, {"$set": {"paused": False}}, upsert=True)
-                        break  # Break inner loop to re-fetch targets
-                    
-                    await asyncio.sleep(10)
-                
-                # Check if we broke out of inner loop for variasi pause
+                        break
+
+                    await asyncio.sleep(8)
+
+                # Check variasi pause
                 if auto_report_mode == "variasi" and cycle_success >= cycle_limit:
+                    logger.info(f"Variasi: {cycle_success} berhasil. Jeda 1 jam...")
+                    resume_at = (datetime.now(timezone.utc) + __import__('datetime').timedelta(hours=1)).isoformat()
+                    await db.auto_report_state.update_one({"key": "state"}, {"$set": {
+                        "paused": True, "cycle_success": cycle_success,
+                        "paused_at": datetime.now(timezone.utc).isoformat(),
+                        "resume_at": resume_at,
+                    }}, upsert=True)
+
+                    for _ in range(60):
+                        if not auto_report_running:
+                            break
+                        await asyncio.sleep(60)
+
+                    cycle_success = 0
+                    cycle_limit = random.randint(15, 20)
+                    auto_report_cycle_count = 0
+                    logger.info(f"Variasi: Jeda selesai. Siklus baru limit={cycle_limit}")
+                    await db.auto_report_state.update_one({"key": "state"}, {"$set": {
+                        "paused": False, "cycle_success": 0, "cycle_limit": cycle_limit,
+                    }}, upsert=True)
                     break
-            
-            await asyncio.sleep(30)
+
+            # Wait before next full cycle
+            if auto_report_running and not (auto_report_mode == "variasi" and cycle_success >= cycle_limit):
+                await asyncio.sleep(20)
+
         except Exception as e:
-            logger.error(f"Auto-report worker error: {e}")
+            logger.error(f"Auto-report error: {e}")
             await asyncio.sleep(30)
 
 
@@ -1132,8 +1168,13 @@ async def auto_report_status():
         "running": auto_report_running,
         "mode": auto_report_mode,
         "cycle_count": auto_report_cycle_count,
+        "cycle_limit": state.get("cycle_limit", 20) if state else 20,
         "paused": state.get("paused", False) if state else False,
         "resume_at": state.get("resume_at", "") if state else "",
+        "active_targets": state.get("active_targets", 0) if state else 0,
+        "active_accounts": state.get("active_accounts", 0) if state else 0,
+        "last_account": state.get("last_account", "") if state else "",
+        "last_target": state.get("last_target", "") if state else "",
     }
 
 

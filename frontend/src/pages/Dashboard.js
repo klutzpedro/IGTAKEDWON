@@ -30,8 +30,13 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
   const [loading, setLoading] = useState(true);
   const [autoMode, setAutoMode] = useState("manual");
   const [cycleCount, setCycleCount] = useState(0);
+  const [cycleLimit, setCycleLimit] = useState(20);
   const [paused, setPaused] = useState(false);
   const [resumeAt, setResumeAt] = useState("");
+  const [activeTargets, setActiveTargets] = useState(0);
+  const [activeAccounts, setActiveAccounts] = useState(0);
+  const [lastAccount, setLastAccount] = useState("");
+  const [lastTarget, setLastTarget] = useState("");
 
   const fetchStats = async () => {
     try {
@@ -43,8 +48,13 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
       setAutoReportRunning(statsRes.data.auto_report_running);
       setAutoMode(arRes.data.mode || "manual");
       setCycleCount(arRes.data.cycle_count || 0);
+      setCycleLimit(arRes.data.cycle_limit || 20);
       setPaused(arRes.data.paused || false);
       setResumeAt(arRes.data.resume_at || "");
+      setActiveTargets(arRes.data.active_targets || 0);
+      setActiveAccounts(arRes.data.active_accounts || 0);
+      setLastAccount(arRes.data.last_account || "");
+      setLastTarget(arRes.data.last_target || "");
     } catch (e) {
       console.error(e);
     } finally {
@@ -162,38 +172,61 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
 
       {/* Auto-report status banner */}
       {autoReportRunning && (
-        <div className={`rounded-md p-4 flex items-center justify-between ${
+        <div className={`rounded-md p-4 ${
           paused ? "bg-amber-50 border border-amber-200" : "bg-blue-50 border border-blue-200"
         }`}>
-          <div className="flex items-center gap-3">
-            <div className={`w-2.5 h-2.5 rounded-full ${paused ? "bg-amber-500" : "bg-blue-500 animate-pulse-dot"}`} />
-            <div>
-              <p className="text-sm font-semibold text-slate-800">
-                {paused ? "Auto-Report Dijeda" : "Auto-Report Aktif"}
-                <span className="ml-2 text-xs font-normal px-2 py-0.5 rounded bg-slate-200 text-slate-600">
-                  {autoMode === "variasi" ? "Mode Variasi" : "Mode Manual"}
-                </span>
-              </p>
-              <p className="text-xs text-slate-500 mt-0.5">
-                {paused
-                  ? `Dijeda setelah ${cycleCount} report berhasil. Lanjut otomatis ${resumeAt ? "pukul " + new Date(resumeAt).toLocaleTimeString("id-ID") : "dalam 1 jam"}`
-                  : autoMode === "variasi"
-                    ? `${cycleCount}/15-20 report berhasil dalam siklus ini. Jeda otomatis saat tercapai.`
-                    : "Berjalan terus sampai dihentikan manual."
-                }
-              </p>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${paused ? "bg-amber-500" : "bg-blue-500 animate-pulse-dot"}`} />
+              <div>
+                <p className="text-sm font-semibold text-slate-800">
+                  {paused ? "Auto-Report Dijeda" : "Auto-Report Aktif"}
+                  <span className="ml-2 text-xs font-normal px-2 py-0.5 rounded bg-slate-200 text-slate-600">
+                    {autoMode === "variasi" ? "Mode Variasi" : "Mode Manual"}
+                  </span>
+                </p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {paused
+                    ? `Dijeda setelah ${cycleCount} report berhasil. Lanjut otomatis ${resumeAt ? "pukul " + new Date(resumeAt).toLocaleTimeString("id-ID") : "dalam 1 jam"}`
+                    : autoMode === "variasi"
+                      ? `${cycleCount}/${cycleLimit} report berhasil dalam siklus ini. Jeda otomatis saat tercapai.`
+                      : "Berjalan terus sampai dihentikan manual."
+                  }
+                </p>
+              </div>
             </div>
+            <Button
+              data-testid="cancel-auto-report-banner-btn"
+              variant="outline"
+              size="sm"
+              onClick={stopAutoReport}
+              className="gap-1.5 text-xs border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700 flex-shrink-0"
+            >
+              <XCircle size={14} weight="fill" />
+              Cancel
+            </Button>
           </div>
-          <Button
-            data-testid="cancel-auto-report-banner-btn"
-            variant="outline"
-            size="sm"
-            onClick={stopAutoReport}
-            className="gap-1.5 text-xs border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700 flex-shrink-0"
-          >
-            <XCircle size={14} weight="fill" />
-            Cancel
-          </Button>
+          {/* Multi-target/account detail */}
+          <div className="flex items-center gap-4 mt-2.5 ml-6 text-xs text-slate-500">
+            <span className="flex items-center gap-1">
+              <Flag size={12} className="text-blue-500" />
+              <strong className="text-slate-700">{activeTargets}</strong> target aktif
+            </span>
+            <span className="flex items-center gap-1">
+              <UserCircle size={12} className="text-blue-500" />
+              <strong className="text-slate-700">{activeAccounts}</strong> akun digunakan
+            </span>
+            {activeTargets > 0 && activeAccounts > 0 && (
+              <span className="text-slate-400">
+                Strategi: round-robin ({activeAccounts} x {activeTargets} = {activeAccounts * activeTargets} kombinasi/siklus)
+              </span>
+            )}
+            {lastTarget && (
+              <span className="text-slate-400 truncate max-w-[200px]">
+                Terakhir: @{lastAccount} → {lastTarget}
+              </span>
+            )}
+          </div>
         </div>
       )}
 
