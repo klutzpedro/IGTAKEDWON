@@ -296,14 +296,11 @@ def _sync_report(cookies: dict, target_url: str, category: str) -> dict:
     import time
     import subprocess
 
-    # Auto-install chromium if missing
-    chrome_path = "/pw-browsers/chromium-1208/chrome-linux/chrome"
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/pw-browsers"
+    # Verify chromium available
+    chrome_path = "/app/.browsers/chromium-1208/chrome-linux/chrome"
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/.browsers"
     if not os.path.exists(chrome_path):
-        logger.info("Chromium missing in report, installing...")
-        ret = os.system("PLAYWRIGHT_BROWSERS_PATH=/pw-browsers /root/.venv/bin/python3 -m playwright install chromium")
-        if not os.path.exists(chrome_path):
-            return {"status": "failed", "message": f"Chromium sedang di-install. Tunggu 1-2 menit lalu coba lagi."}
+        return {"status": "failed", "message": "Chromium tidak tersedia. Deploy ulang diperlukan."}
 
     try:
         parsed = parse_instagram_url(target_url)
@@ -333,7 +330,7 @@ def _sync_report(cookies: dict, target_url: str, category: str) -> dict:
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"],
-                executable_path="/pw-browsers/chromium-1208/chrome-linux/chrome"
+                executable_path="/app/.browsers/chromium-1208/chrome-linux/chrome"
             )
             ctx = browser.new_context(
                 viewport={"width": 1280, "height": 900},
@@ -1403,21 +1400,18 @@ app.add_middleware(CORSMiddleware, allow_credentials=True,
 async def startup_event():
     global monitor_running, monitor_task, auto_report_running, auto_report_task, auto_report_mode, auto_report_cycle_count
     
-    # Install Chromium on startup if missing (critical for deployment)
-    chrome_path = "/pw-browsers/chromium-1208/chrome-linux/chrome"
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/pw-browsers"
-    if not os.path.exists(chrome_path):
-        logger.info("Chromium not found - installing in background (takes ~60s)...")
-        loop = asyncio.get_event_loop()
-        def _install_chromium():
-            ret = os.system("PLAYWRIGHT_BROWSERS_PATH=/pw-browsers /root/.venv/bin/python3 -m playwright install chromium")
-            if os.path.exists(chrome_path):
-                logger.info("Chromium installed successfully!")
-            else:
-                logger.error(f"Chromium install failed (exit code: {ret})")
-        asyncio.ensure_future(loop.run_in_executor(ig_executor, _install_chromium))
+    # Chromium is pre-installed at /app/.browsers (deployed with code)
+    chrome_path = "/app/.browsers/chromium-1208/chrome-linux/chrome"
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/.browsers"
+    if os.path.exists(chrome_path):
+        logger.info("Chromium available (pre-installed with deployment)")
     else:
-        logger.info("Chromium already available")
+        logger.warning("Chromium NOT found at deploy path! Attempting install...")
+        os.system("PLAYWRIGHT_BROWSERS_PATH=/app/.browsers /root/.venv/bin/python3 -m playwright install chromium")
+        if os.path.exists(chrome_path):
+            logger.info("Chromium installed successfully")
+        else:
+            logger.error("Chromium install FAILED - reporting will not work")
     
     # Auto-resume auto-report if it was running before restart
     state = await db.auto_report_state.find_one({"key": "state"}, {"_id": 0})
