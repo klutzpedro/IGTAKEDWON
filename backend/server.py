@@ -439,40 +439,70 @@ def _sync_report(cookies: dict, target_url: str, category: str) -> dict:
                         except:
                             pass
 
-                    # Step 6: Handle sub-categories (Instagram has 2-level report flow)
-                    # After selecting main category, sub-options may appear
-                    time.sleep(1)
-                    sub_options = page.locator('button, [role="menuitem"]').all()
-                    for opt in sub_options:
+                    # Step 6: Handle ALL intermediate questions and sub-categories
+                    # Instagram has multi-step report flow: category → sub-category → age question → submit
+                    # Loop until we see "Submit report" or "Thanks for reporting"
+                    for step in range(8):  # Max 8 steps to prevent infinite loop
+                        time.sleep(2)
+                        page_text_check = page.content().lower()
+
+                        # Check if we already got confirmation
+                        if "thanks for reporting" in page_text_check or "thank you for reporting" in page_text_check:
+                            break
+
+                        # Handle "Are you under 18?" → click "No"
                         try:
-                            txt = (opt.inner_text() or "").strip()
-                            vis = opt.is_visible()
-                            # Click first visible sub-option that looks like a report reason
-                            # (has arrow > indicator, not Submit/Close)
-                            if (vis and txt and len(txt) > 5 and len(txt) < 80
-                                and txt not in ["Submit report", "Close", "Cancel"]
-                                and "submit" not in txt.lower() and "close" not in txt.lower()):
-                                # Check if this is a clickable sub-option (has arrow)
-                                parent_html = opt.evaluate("el => el.outerHTML")
-                                if ">" in (opt.inner_text() or "") or opt.evaluate("el => el.querySelector('svg') !== null"):
-                                    opt.click()
-                                    time.sleep(2)
-                                    break
+                            no_btn = page.locator('button:has-text("No")').first
+                            if no_btn.is_visible(timeout=1000):
+                                no_btn.click()
+                                time.sleep(2)
+                                continue
                         except:
+                            pass
+
+                        # Handle sub-category options (clickable items with chevron/arrow)
+                        clicked_sub = False
+                        try:
+                            options = page.locator('button').all()
+                            for opt in options:
+                                txt = (opt.inner_text() or "").strip()
+                                if (opt.is_visible() and txt and len(txt) > 3 and len(txt) < 100
+                                    and txt.lower() not in ["submit report", "close", "cancel", "yes", "no", "back"]
+                                    and "submit" not in txt.lower() and "close" not in txt.lower()):
+                                    # Check if it has a chevron (sub-option)
+                                    has_svg = opt.evaluate("el => el.querySelector('svg') !== null")
+                                    if has_svg:
+                                        opt.click()
+                                        clicked_sub = True
+                                        time.sleep(2)
+                                        break
+                        except:
+                            pass
+                        if clicked_sub:
                             continue
 
-                    # Step 7: Click Submit report button
-                    for _ in range(3):
-                        for btn_text in ["Submit report", "Submit Report", "Submit", "Next", "Done"]:
+                        # Try clicking "Submit report"
+                        try:
+                            submit = page.locator('button:has-text("Submit report")').first
+                            if submit.is_visible(timeout=1000):
+                                submit.click()
+                                time.sleep(3)
+                                continue
+                        except:
+                            pass
+
+                        # Try other submit/next buttons
+                        for btn_text in ["Submit", "Next", "Done", "Continue"]:
                             try:
                                 btn = page.locator(f'button:has-text("{btn_text}")').first
-                                if btn.is_visible(timeout=1500):
+                                if btn.is_visible(timeout=500):
                                     btn.click()
-                                    time.sleep(3)
+                                    time.sleep(2)
+                                    break
                             except:
                                 continue
 
-                    # Step 7: CAPTURE SCREENSHOT NOW (before closing) - this is when "Thanks for reporting" shows
+                    # Step 7: CAPTURE SCREENSHOT - check for confirmation
                     time.sleep(2)
                     page_text = page.content().lower()
                     confirmed = ("thanks for reporting" in page_text
@@ -501,8 +531,8 @@ def _sync_report(cookies: dict, target_url: str, category: str) -> dict:
                         }
                     else:
                         return {
-                            "status": "success",
-                            "message": f"Report flow selesai untuk {parsed.get('display', '')}. Cek screenshot untuk bukti.",
+                            "status": "failed",
+                            "message": f"Report flow tidak selesai untuk {parsed.get('display', '')}. Konfirmasi tidak muncul. Cek screenshot.",
                             "screenshot": ss
                         }
 
