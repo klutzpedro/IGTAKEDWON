@@ -294,6 +294,16 @@ def _sync_report(cookies: dict, target_url: str, category: str) -> dict:
     """Report via browser automation - completes full Instagram report flow with screenshot proof."""
     from playwright.sync_api import sync_playwright
     import time
+    import subprocess
+
+    # Auto-install chromium if missing
+    chrome_path = "/pw-browsers/chromium-1208/chrome-linux/chrome"
+    if not os.path.exists(chrome_path):
+        logger.info("Chromium missing, installing...")
+        try:
+            subprocess.run(["python3", "-m", "playwright", "install", "chromium"], check=True, timeout=180)
+        except Exception as e:
+            return {"status": "failed", "message": f"Chromium tidak tersedia dan gagal install: {str(e)[:100]}"}
 
     try:
         parsed = parse_instagram_url(target_url)
