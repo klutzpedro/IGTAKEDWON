@@ -797,7 +797,11 @@ async def auto_report_worker():
                     target_idx = (acc_idx + round_num) % n_targets
                     target = targets[target_idx]
 
-                    result = await perform_report(target, account)
+                    try:
+                        result = await perform_report(target, account)
+                    except Exception as report_err:
+                        logger.error(f"Report exception for {target.get('display_name','')}: {report_err}")
+                        result = {"status": "failed", "message": f"Exception: {str(report_err)[:200]}"}
 
                     log_doc = {
                         "id": str(uuid.uuid4()),
@@ -1397,7 +1401,7 @@ app.add_middleware(CORSMiddleware, allow_credentials=True,
 
 @app.on_event("startup")
 async def startup_event():
-    global monitor_running, monitor_task
+    global monitor_running, monitor_task, auto_report_running, auto_report_task, auto_report_mode, auto_report_cycle_count
     
     # Install Chromium on startup if missing (critical for deployment)
     chrome_path = "/pw-browsers/chromium-1208/chrome-linux/chrome"
@@ -1415,6 +1419,16 @@ async def startup_event():
     else:
         logger.info("Chromium already available")
     
+    # Auto-resume auto-report if it was running before restart
+    state = await db.auto_report_state.find_one({"key": "state"}, {"_id": 0})
+    if state and state.get("running"):
+        auto_report_mode = state.get("mode", "manual")
+        auto_report_running = True
+        auto_report_cycle_count = state.get("cycle_success", 0)
+        auto_report_task = asyncio.create_task(auto_report_worker())
+        logger.info(f"Auto-report RESUMED from DB (mode: {auto_report_mode}, cycle: {auto_report_cycle_count})")
+    
+    # Start monitor
     monitor_running = True
     monitor_task = asyncio.create_task(monitor_worker())
     logger.info("Auto-monitor started on server startup (every 3 hours)")
