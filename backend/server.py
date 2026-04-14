@@ -298,12 +298,12 @@ def _sync_report(cookies: dict, target_url: str, category: str) -> dict:
 
     # Auto-install chromium if missing
     chrome_path = "/pw-browsers/chromium-1208/chrome-linux/chrome"
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/pw-browsers"
     if not os.path.exists(chrome_path):
-        logger.info("Chromium missing, installing...")
-        try:
-            subprocess.run(["python3", "-m", "playwright", "install", "chromium"], check=True, timeout=180)
-        except Exception as e:
-            return {"status": "failed", "message": f"Chromium tidak tersedia dan gagal install: {str(e)[:100]}"}
+        logger.info("Chromium missing in report, installing...")
+        ret = os.system("PLAYWRIGHT_BROWSERS_PATH=/pw-browsers /root/.venv/bin/python3 -m playwright install chromium")
+        if not os.path.exists(chrome_path):
+            return {"status": "failed", "message": f"Chromium sedang di-install. Tunggu 1-2 menit lalu coba lagi."}
 
     try:
         parsed = parse_instagram_url(target_url)
@@ -1398,6 +1398,23 @@ app.add_middleware(CORSMiddleware, allow_credentials=True,
 @app.on_event("startup")
 async def startup_event():
     global monitor_running, monitor_task
+    
+    # Install Chromium on startup if missing (critical for deployment)
+    chrome_path = "/pw-browsers/chromium-1208/chrome-linux/chrome"
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/pw-browsers"
+    if not os.path.exists(chrome_path):
+        logger.info("Chromium not found - installing in background (takes ~60s)...")
+        loop = asyncio.get_event_loop()
+        def _install_chromium():
+            ret = os.system("PLAYWRIGHT_BROWSERS_PATH=/pw-browsers /root/.venv/bin/python3 -m playwright install chromium")
+            if os.path.exists(chrome_path):
+                logger.info("Chromium installed successfully!")
+            else:
+                logger.error(f"Chromium install failed (exit code: {ret})")
+        asyncio.ensure_future(loop.run_in_executor(ig_executor, _install_chromium))
+    else:
+        logger.info("Chromium already available")
+    
     monitor_running = True
     monitor_task = asyncio.create_task(monitor_worker())
     logger.info("Auto-monitor started on server startup (every 3 hours)")
