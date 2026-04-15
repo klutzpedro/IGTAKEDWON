@@ -1,0 +1,104 @@
+# ============================================================
+# PERINTAH UPDATE VPS - COPY PASTE SATU PER SATU
+# ============================================================
+# Untuk update IG Reporter ke versi terbaru (+ fitur Auto Post)
+# Pastikan sudah "Save to GitHub" dari Emergent terlebih dulu
+# ============================================================
+
+
+# ============================================================
+# LANGKAH 1: LOGIN KE VPS
+# ============================================================
+
+ssh root@147.93.81.36
+
+
+# ============================================================
+# LANGKAH 2: STOP BACKEND YANG SEDANG JALAN
+# ============================================================
+
+pkill -f "uvicorn server:app" 2>/dev/null; echo "Backend stopped"
+
+
+# ============================================================
+# LANGKAH 3: BACKUP DULU (AMAN)
+# ============================================================
+
+cp -r /root/ig-reporter /root/ig-reporter-backup-$(date +%Y%m%d) && echo "Backup OK"
+
+
+# ============================================================
+# LANGKAH 4: UPDATE FILE DARI GITHUB (JIKA PAKAI GIT)
+# ============================================================
+# Pilih SALAH SATU cara:
+
+# CARA A: Jika sudah pakai Git
+cd /root/ig-reporter && git pull
+
+# CARA B: Jika upload manual (jalankan dari KOMPUTER ANDA, bukan VPS)
+# Download kode dari Emergent, lalu:
+# scp -r backend/server.py root@147.93.81.36:/root/ig-reporter/backend/
+# scp -r frontend/src/pages/AutoPost.js root@147.93.81.36:/root/ig-reporter/frontend/src/pages/
+# scp -r frontend/src/App.js root@147.93.81.36:/root/ig-reporter/frontend/src/
+# scp -r frontend/src/components/Sidebar.js root@147.93.81.36:/root/ig-reporter/frontend/src/components/
+
+
+# ============================================================
+# LANGKAH 5: FIX PATH CHROMIUM UNTUK VPS
+# ============================================================
+
+cd /root/ig-reporter/backend && sed -i 's|/app/.browsers/chromium-[0-9]*/chrome-linux/chrome|/root/ig-browsers/chromium-1208/chrome-linux/chrome|g' server.py && sed -i 's|/app/.browsers|/root/ig-browsers|g' server.py && sed -i 's|/app/backend/screenshots|/root/ig-reporter/backend/screenshots|g' server.py && echo "Path fixed!"
+
+
+# ============================================================
+# LANGKAH 6: INSTALL DEPENDENCIES BARU
+# ============================================================
+
+source /root/ig-venv/bin/activate && cd /root/ig-reporter/backend && pip install -r requirements.txt && pip install emergentintegrations --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/ && echo "Dependencies OK"
+
+
+# ============================================================
+# LANGKAH 7: PASTIKAN EMERGENT_LLM_KEY ADA DI .ENV
+# ============================================================
+# Cek dulu:
+cat /root/ig-reporter/backend/.env | grep EMERGENT
+
+# Jika belum ada, tambahkan (ganti KEY_ANDA dengan key dari Emergent):
+# echo 'EMERGENT_LLM_KEY=KEY_ANDA' >> /root/ig-reporter/backend/.env
+
+
+# ============================================================
+# LANGKAH 8: BUILD FRONTEND
+# ============================================================
+
+cd /root/ig-reporter/frontend && yarn install && yarn build && echo "Frontend build OK"
+
+
+# ============================================================
+# LANGKAH 9: START BACKEND
+# ============================================================
+
+source /root/ig-venv/bin/activate && cd /root/ig-reporter/backend && export PLAYWRIGHT_BROWSERS_PATH=/root/ig-browsers && nohup uvicorn server:app --host 0.0.0.0 --port 8001 --reload > /var/log/ig-reporter.log 2>&1 &
+
+
+# ============================================================
+# LANGKAH 10: VERIFIKASI
+# ============================================================
+
+# Cek backend jalan:
+sleep 3 && curl http://localhost:8001/api/
+
+# Cek auto-post endpoint:
+curl http://localhost:8001/api/auto-post/languages
+
+# Cek log jika ada error:
+tail -20 /var/log/ig-reporter.log
+
+
+# ============================================================
+# SELESAI! Fitur baru:
+# - Halaman Auto Post di menu sidebar
+# - Buat jadwal posting otomatis (tema, bahasa, jam)
+# - AI generate gambar + caption + hashtag trending
+# - Post otomatis ke Instagram sesuai jadwal
+# ============================================================
