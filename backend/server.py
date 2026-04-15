@@ -1516,42 +1516,374 @@ async def generate_post_image(theme: str, language: str) -> bytes:
         return images[0]
     raise Exception("Image generation failed")
 
-def _sync_post_to_instagram(cookies: dict, image_bytes: bytes, caption: str, proxy: str = "") -> dict:
-    """Post image to Instagram using instagrapi. Runs in thread pool."""
+def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str) -> dict:
+    """Post image to Instagram using Playwright browser automation.
+    Logs in with username/password via browser, then uploads the post."""
+    from playwright.sync_api import sync_playwright
     import tempfile
+    import time
+
+    chrome_path = "/app/.browsers/chromium-1208/chrome-linux/chrome"
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/.browsers"
+    if not os.path.exists(chrome_path):
+        return {"status": "failed", "message": "Chromium tidak tersedia."}
+
+    username = account_data.get("username", "")
+    password = account_data.get("password", "")
+    session_cookies = account_data.get("cookies", {})
+    if not username or not password:
+        return {"status": "failed", "message": "Username/password tidak tersedia."}
+
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+        f.write(image_bytes)
+        temp_path = f.name
+
+    timestamp = int(time.time())
+
     try:
-        from instagrapi import Client as IGClient
-        
-        cl = IGClient()
-        cl.delay_range = [1, 3]
-        if proxy:
-            cl.set_proxy(proxy)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+                executable_path=chrome_path,
+            )
+            ctx = browser.new_context(
+                viewport={"width": 1280, "height": 900},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            )
+            page = ctx.new_page()
 
-        # Restore session from cookies
-        settings = cookies.get("_settings", {})
-        if settings:
-            cl.set_settings(settings)
-            cl.login(cookies.get("_username", ""), cookies.get("_password", ""))
-        else:
-            return {"status": "failed", "message": "Session tidak tersedia"}
+            try:
+                # === STEP 1: LOGIN VIA BROWSER ===
+                logger.info(f"AutoPost Browser: Setting cookies and navigating...")
 
-        # Save image to temp file
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-            f.write(image_bytes)
-            temp_path = f.name
+                # Set session cookies if available (helps avoid re-login)
+                if session_cookies.get("sessionid"):
+                    all_cookies = [
+                        {"name": "sessionid", "value": session_cookies["sessionid"], "domain": ".instagram.com", "path": "/"},
+                        {"name": "csrftoken", "value": session_cookies.get("csrftoken", ""), "domain": ".instagram.com", "path": "/"},
+                        {"name": "ds_user_id", "value": str(session_cookies.get("ds_user_id", "")), "domain": ".instagram.com", "path": "/"},
+                        {"name": "ig_nrcb", "value": "1", "domain": ".instagram.com", "path": "/"},
+                    ]
+                    for k in ["mid", "ig_did", "rur"]:
+                        if session_cookies.get(k):
+                            all_cookies.append({"name": k, "value": session_cookies[k], "domain": ".instagram.com", "path": "/"})
+                    ctx.add_cookies(all_cookies)
 
-        # Upload photo
-        media = cl.photo_upload(temp_path, caption=caption)
-        os.unlink(temp_path)
+                # Navigate to homepage
+                page.goto("https://www.instagram.com/", wait_until="domcontentloaded", timeout=30000)
+                time.sleep(4)
 
-        return {
-            "status": "success",
-            "message": f"Posted! Media ID: {media.pk}",
-            "media_id": str(media.pk),
-            "media_code": media.code,
-        }
+                # Determine page state and handle accordingly
+                page_text = page.content().lower()
+                current_url = page.url.lower()
+
+                logged_in = False
+
+                # Case 1: Check if we're on the actual feed (sidebar with Home, Explore, etc.)
+                if "/accounts/login" not in current_url:
+                    # Detect profile selection screen (has "Use another profile" or "Create new account")
+                    is_profile_selection = "use another profile" in page_text or "create new account" in page_text or "gunakan profil lain" in page_text
+                    
+                    if not is_profile_selection:
+                        # Might be the actual feed
+                        has_sidebar = any(x in page_text[:5000] for x in ["home</span>", "explore</span>", "search</span>", "reels</span>"])
+                        if has_sidebar:
+                            logged_in = True
+                            logger.info("AutoPost Browser: Already logged in to feed!")
+                    
+                    if not logged_in:
+                        # Profile selection screen - click Continue then enter password
+                        logger.info("AutoPost Browser: Profile selection screen detected...")
+                        for cont_sel in ['div[role="button"]:has-text("Continue")', 'button:has-text("Continue")', 'button:has-text("Lanjutkan")']:
+                            try:
+                                el = page.locator(cont_sel).first
+                                if el.is_visible(timeout=2000):
+                                    el.click(force=True)
+                                    logger.info(f"AutoPost Browser: Clicked Continue")
+                                    time.sleep(4)
+                                    # Enter password in the modal that appears
+                                    try:
+                                        pi = page.locator('input[name="password"], input[type="password"]').first
+                                        if pi.is_visible(timeout=3000):
+                                            logger.info("AutoPost Browser: Entering password...")
+                                            pi.fill(password)
+                                            time.sleep(0.5)
+                                            # Click Log in button - try multiple selectors
+                                            login_clicked = False
+                                            for lb in ['button[type="submit"]', 'button:has-text("Log in")', 'button:has-text("Log In")', 'button:has-text("Masuk")']:
+                                                try:
+                                                    lbtn = page.locator(lb).first
+                                                    if lbtn.is_visible(timeout=2000):
+                                                        lbtn.click(force=True)
+                                                        login_clicked = True
+                                                        logger.info(f"AutoPost Browser: Login button clicked via {lb}")
+                                                        time.sleep(8)
+                                                        logged_in = True
+                                                        break
+                                                except:
+                                                    continue
+                                            if not login_clicked:
+                                                # Try pressing Enter key
+                                                page.keyboard.press("Enter")
+                                                logger.info("AutoPost Browser: Pressed Enter for login")
+                                                time.sleep(8)
+                                                logged_in = True
+                                    except:
+                                        # If no password modal, might already be entering feed
+                                        time.sleep(5)
+                                        if "/accounts/login" not in page.url.lower():
+                                            logged_in = True
+                                    break
+                            except:
+                                continue
+
+                # Case 2: Login page - only if not yet logged in
+                if not logged_in:
+                    logger.info(f"AutoPost Browser: Attempting login from current page...")
+                    try:
+                        user_input = page.locator('input[name="username"]').first
+                        if user_input.is_visible(timeout=3000):
+                            pass_input = page.locator('input[name="password"]').first
+                            user_input.fill(username)
+                            time.sleep(0.5)
+                            pass_input.fill(password)
+                            time.sleep(0.5)
+                            page.locator('button[type="submit"]').first.click()
+                            time.sleep(8)
+                            logged_in = True
+                        else:
+                            # No login form visible, maybe we're actually logged in after all
+                            if "/accounts/login" not in page.url.lower() and "challenge" not in page.url.lower():
+                                logged_in = True
+                                logger.info("AutoPost Browser: No login form, assuming logged in")
+                    except Exception as le:
+                        logger.error(f"AutoPost Browser: Login error: {le}")
+                        # Last check: if URL is not login page, we might be logged in
+                        if "/accounts/login" not in page.url.lower() and "challenge" not in page.url.lower():
+                            logged_in = True
+
+                if not logged_in:
+                    ss = f"postfail_login_{timestamp}.png"
+                    try:
+                        page.screenshot(path=f"/app/backend/screenshots/{ss}", full_page=False)
+                    except:
+                        ss = ""
+                    browser.close()
+                    os.unlink(temp_path)
+                    return {"status": "failed", "message": "Login browser gagal. Cek screenshot.", "screenshot": ss}
+
+                # Check for challenge/2FA
+                if "challenge" in page.url.lower():
+                    ss = f"postfail_challenge_{timestamp}.png"
+                    try:
+                        page.screenshot(path=f"/app/backend/screenshots/{ss}", full_page=False)
+                    except:
+                        ss = ""
+                    browser.close()
+                    os.unlink(temp_path)
+                    return {"status": "failed", "message": "Instagram meminta verifikasi/2FA. Login manual dulu via browser.", "screenshot": ss}
+
+                # Dismiss popups
+                for sel in ['button:has-text("Not Now")', 'button:has-text("Not now")', 'button:has-text("Tidak sekarang")', 'button:has-text("Save Info")']:
+                    try:
+                        el = page.locator(sel).first
+                        if el.is_visible(timeout=2000):
+                            el.click(force=True)
+                            time.sleep(1)
+                    except:
+                        pass
+
+                logger.info(f"AutoPost Browser: Logged in! URL: {page.url}")
+                try:
+                    page.screenshot(path=f"/app/backend/screenshots/postdebug_feed_{timestamp}.png", full_page=False)
+                except:
+                    pass
+
+                # === STEP 2: CLICK CREATE POST ===
+                logger.info("AutoPost Browser: Looking for Create button...")
+                time.sleep(2)
+                create_clicked = False
+
+                for sel in ['svg[aria-label="New post"]', 'svg[aria-label="New Post"]', 'svg[aria-label="Postingan baru"]', 'a[href="/create/style/"]', 'a[href="/create/select/"]']:
+                    try:
+                        el = page.locator(sel).first
+                        if el.is_visible(timeout=2000):
+                            el.click(force=True)
+                            create_clicked = True
+                            logger.info(f"AutoPost Browser: Create via {sel}")
+                            time.sleep(3)
+                            break
+                    except:
+                        continue
+
+                if not create_clicked:
+                    try:
+                        for link in page.locator('a[role="link"]').all():
+                            href = link.get_attribute("href") or ""
+                            if "/create/" in href and "account" not in href:
+                                link.click(force=True)
+                                create_clicked = True
+                                logger.info(f"AutoPost Browser: Create via link: {href}")
+                                time.sleep(3)
+                                break
+                    except:
+                        pass
+
+                if not create_clicked:
+                    try:
+                        for span in page.locator('span').all():
+                            txt = (span.inner_text() or "").strip()
+                            if txt in ("Create", "Buat"):
+                                span.click(force=True)
+                                create_clicked = True
+                                logger.info(f"AutoPost Browser: Create via span: {txt}")
+                                time.sleep(3)
+                                break
+                    except:
+                        pass
+
+                if not create_clicked:
+                    ss = f"postfail_nocreate_{timestamp}.png"
+                    try:
+                        page.screenshot(path=f"/app/backend/screenshots/{ss}", full_page=False)
+                    except:
+                        ss = ""
+                    browser.close()
+                    os.unlink(temp_path)
+                    return {"status": "failed", "message": "Tombol Create tidak ditemukan. Cek screenshot.", "screenshot": ss}
+
+                # === STEP 3: UPLOAD IMAGE ===
+                logger.info("AutoPost Browser: Uploading image...")
+                file_uploaded = False
+                try:
+                    page.locator('input[type="file"]').first.set_input_files(temp_path)
+                    file_uploaded = True
+                    logger.info("AutoPost Browser: Image uploaded via file input")
+                    time.sleep(4)
+                except:
+                    pass
+
+                if not file_uploaded:
+                    for btn_text in ["Select from computer", "Select From Computer", "Pilih dari komputer"]:
+                        try:
+                            btn = page.locator(f'button:has-text("{btn_text}")').first
+                            if btn.is_visible(timeout=2000):
+                                with page.expect_file_chooser(timeout=5000) as fc_info:
+                                    btn.click(force=True)
+                                fc_info.value.set_files(temp_path)
+                                file_uploaded = True
+                                logger.info(f"AutoPost Browser: Image via filechooser ({btn_text})")
+                                time.sleep(4)
+                                break
+                        except:
+                            continue
+
+                if not file_uploaded:
+                    ss = f"postfail_upload_{timestamp}.png"
+                    try:
+                        page.screenshot(path=f"/app/backend/screenshots/{ss}", full_page=False)
+                    except:
+                        ss = ""
+                    browser.close()
+                    os.unlink(temp_path)
+                    return {"status": "failed", "message": "Gagal upload gambar. Cek screenshot.", "screenshot": ss}
+
+                # === STEP 4: NEXT BUTTONS ===
+                logger.info("AutoPost Browser: Navigating steps...")
+                for step in range(5):
+                    time.sleep(2)
+                    clicked = False
+                    for ns in ['button:has-text("Next")', 'button:has-text("Lanjut")', 'div[role="button"]:has-text("Next")']:
+                        try:
+                            btn = page.locator(ns).first
+                            if btn.is_visible(timeout=2000):
+                                btn.click(force=True)
+                                clicked = True
+                                logger.info(f"AutoPost Browser: Next (step {step+1})")
+                                time.sleep(2)
+                                break
+                        except:
+                            continue
+                    if not clicked:
+                        try:
+                            if page.locator('button:has-text("Share"), button:has-text("Bagikan")').first.is_visible(timeout=1000):
+                                break
+                        except:
+                            pass
+
+                # === STEP 5: CAPTION ===
+                logger.info("AutoPost Browser: Entering caption...")
+                for sel in ['div[aria-label="Write a caption..."]', 'div[aria-label="Tulis keterangan..."]', 'div[role="textbox"][contenteditable="true"]', 'textarea[aria-label="Write a caption..."]', 'textarea']:
+                    try:
+                        el = page.locator(sel).first
+                        if el.is_visible(timeout=2000):
+                            el.click()
+                            time.sleep(0.5)
+                            try:
+                                el.fill(caption[:2200])
+                            except:
+                                page.keyboard.type(caption[:2200], delay=3)
+                            logger.info(f"AutoPost Browser: Caption entered via {sel}")
+                            time.sleep(1)
+                            break
+                    except:
+                        continue
+
+                # === STEP 6: SHARE ===
+                logger.info("AutoPost Browser: Clicking Share...")
+                shared = False
+                for ss_sel in ['button:has-text("Share")', 'button:has-text("Bagikan")', 'div[role="button"]:has-text("Share")']:
+                    try:
+                        btn = page.locator(ss_sel).first
+                        if btn.is_visible(timeout=3000):
+                            btn.click(force=True)
+                            shared = True
+                            logger.info("AutoPost Browser: Share clicked!")
+                            time.sleep(10)
+                            break
+                    except:
+                        continue
+
+                # === STEP 7: RESULT ===
+                time.sleep(3)
+                page_text = page.content().lower()
+                ss = f"autopost_result_{timestamp}.png"
+                try:
+                    page.screenshot(path=f"/app/backend/screenshots/{ss}", full_page=False)
+                except:
+                    ss = ""
+
+                confirmed = any(x in page_text for x in ["your post has been shared", "post shared", "postingan dibagikan"])
+                if not confirmed and shared and "/create/" not in page.url.lower():
+                    confirmed = True
+
+                browser.close()
+                os.unlink(temp_path)
+
+                if confirmed:
+                    return {"status": "success", "message": "Posting berhasil!", "screenshot": ss, "media_code": ""}
+                elif shared:
+                    return {"status": "success", "message": "Share diklik. Cek screenshot.", "screenshot": ss, "media_code": ""}
+                else:
+                    return {"status": "failed", "message": "Posting flow tidak selesai. Cek screenshot.", "screenshot": ss}
+
+            except Exception as e:
+                ss = f"postfail_{timestamp}.png"
+                try:
+                    page.screenshot(path=f"/app/backend/screenshots/{ss}", full_page=False)
+                except:
+                    ss = ""
+                browser.close()
+                os.unlink(temp_path)
+                return {"status": "failed", "message": f"Browser error: {str(e)[:250]}", "screenshot": ss}
+
     except Exception as e:
-        return {"status": "failed", "message": str(e)[:300]}
+        try:
+            os.unlink(temp_path)
+        except:
+            pass
+        return {"status": "failed", "message": f"Error: {str(e)[:300]}"}
 
 async def execute_auto_post(schedule: dict) -> dict:
     """Full auto-post flow: generate image + caption, then post to Instagram."""
@@ -1561,9 +1893,24 @@ async def execute_auto_post(schedule: dict) -> dict:
         if not account:
             return {"status": "failed", "message": "Akun tidak ditemukan"}
 
+        if not account.get("username") or not account.get("password"):
+            return {"status": "failed", "message": "Username/password tidak tersedia."}
+
+        # Get session cookies if available (optional, helps avoid re-login)
         session_doc = await db.ig_sessions.find_one({"account_id": account["id"]}, {"_id": 0})
-        if not session_doc or not session_doc.get("settings"):
-            return {"status": "failed", "message": "Session tidak tersedia. Login ulang."}
+        session_cookies = {}
+        if session_doc and session_doc.get("settings"):
+            settings = session_doc["settings"]
+            auth_data = settings.get("authorization_data", {})
+            ig_cookies = settings.get("cookies", {})
+            session_cookies = {
+                "sessionid": auth_data.get("sessionid", "") or ig_cookies.get("sessionid", ""),
+                "ds_user_id": str(auth_data.get("ds_user_id", "") or ig_cookies.get("ds_user_id", "")),
+                "csrftoken": ig_cookies.get("csrftoken", ""),
+                "mid": settings.get("mid", ""),
+                "ig_did": settings.get("ig_did", ""),
+                "rur": ig_cookies.get("rur", ""),
+            }
 
         # Step 1: Generate caption
         logger.info(f"AutoPost: Generating caption for '{schedule['theme']}'...")
@@ -1579,17 +1926,17 @@ async def execute_auto_post(schedule: dict) -> dict:
         with open(img_path, "wb") as f:
             f.write(image_bytes)
 
-        # Step 3: Post to Instagram
+        # Step 3: Post to Instagram via Playwright browser automation
         logger.info(f"AutoPost: Posting to @{account['username']}...")
-        cookies_data = {
-            "_settings": session_doc["settings"],
-            "_username": account["username"],
-            "_password": account["password"],
+        account_data = {
+            "username": account["username"],
+            "password": account["password"],
+            "cookies": session_cookies,
         }
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             ig_executor, _sync_post_to_instagram,
-            cookies_data, image_bytes, caption_data["full_text"], account.get("proxy", "")
+            account_data, image_bytes, caption_data["full_text"]
         )
 
         # Save to history
