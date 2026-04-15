@@ -1,47 +1,70 @@
-# IG Reporter - Instagram Reporting Automation App
+# Instagram Report Automation + Auto Post - PRD
 
 ## Problem Statement
-Aplikasi untuk login ke Instagram, memasukkan link postingan/akun yang ingin dilaporkan, dan melakukan report otomatis berulang kali sampai konten tersebut dihapus. Tujuan: melaporkan konten disinformasi, fitnah, dan kebencian.
+Aplikasi otomasi Instagram yang bisa:
+1. Login dengan akun IG user-provided
+2. Menerima link post/akun dan melaporkannya berulang kali (hate speech, disinformation) sampai di-takedown
+3. Monitoring dashboard untuk tracking status
+4. **Auto Post**: Fitur posting otomatis dengan gambar dan caption AI-generated berdasarkan tema, bahasa, dan trending hashtags
 
 ## Architecture
-- **Backend**: FastAPI + MongoDB + instagrapi (Instagram Private API)
-- **Frontend**: React + Tailwind CSS + Shadcn UI + Phosphor Icons
-- **Database**: MongoDB (ig_accounts, report_targets, report_logs, ig_sessions)
+- **Backend**: FastAPI + PyMongo (Motor async) + Playwright (browser automation) + emergentintegrations (LLM)
+- **Frontend**: React + Shadcn UI + Phosphor Icons
+- **Database**: MongoDB
+- **Browser**: Playwright Chromium pre-installed at `/app/.browsers/`
 
-## User Personas
-- Content moderator / activist yang ingin melaporkan konten berbahaya di Instagram
-- No authentication required for the web app
+## Core Features
 
-## Core Requirements
-1. Multi-account Instagram management
-2. URL-based target input (posts, reels, stories, profiles)
-3. Automated reporting using Instagram's report categories
-4. Repeated auto-reporting until content is taken down
-5. Monitoring dashboard for progress tracking
+### Completed
+- [x] CRUD Akun Instagram (add, edit, delete, login, challenge/2FA, logout)
+- [x] CRUD Target Link (add, edit, delete, toggle auto-report)
+- [x] Reporting via Playwright browser automation (mobile emulation)
+- [x] Round-robin multi-account x multi-target reporting
+- [x] Mode Variasi (pause after 15-20 success, resume after 1 hour) & Manual
+- [x] Auto-resume worker on server restart (MongoDB persistence)
+- [x] Screenshot proof of "Thanks for reporting" dialog
+- [x] Monitor worker (check every 3 hours if targets are still alive)
+- [x] Manual check-now button
+- [x] Dashboard with stats, recent logs, auto-report controls
+- [x] **Auto Post Feature** (Feb 2026):
+  - Schedule creation (account, theme, language, time)
+  - AI caption generation (GPT-5.2 via emergentintegrations)
+  - AI image generation (GPT Image 1 via emergentintegrations)
+  - Instagram posting via instagrapi
+  - Background scheduler (checks every 60s, posts at scheduled time)
+  - History log with image proof
+  - Preview caption feature
+  - Full CRUD for schedules
+  - Frontend UI page at /auto-post
 
-## What's Been Implemented (April 2026)
-- [x] Dashboard with real-time stats (active accounts, reports sent, success/fail, takedowns)
-- [x] Account management (add/remove/login/logout multiple IG accounts)
-- [x] Report target management (add URL, select category, toggle auto-report)
-- [x] Instagram URL parser (post, reel, story, profile detection)
-- [x] Manual and automatic reporting via instagrapi
-- [x] Monitoring page with status filters and detailed logs
-- [x] Auto-report background worker with start/stop control
-- [x] 12 Instagram report categories matching actual IG options
-- [x] Swiss high-contrast light theme UI
+### Backlog / Future
+- [ ] Multi-schedule per akun
+- [ ] Preview image sebelum posting
+- [ ] Retry logic untuk kegagalan posting
+- [ ] Analytics dashboard (posting success rate)
+- [ ] Refactoring: Break server.py into modules (routes, workers, services)
 
-## Prioritized Backlog
-### P0 (Must have for production)
-- Real Instagram account testing with actual credentials
-- Challenge/2FA handling for Instagram login
-- Rate limiting and anti-ban measures
+## Key Endpoints
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /api/accounts | List accounts |
+| POST | /api/accounts | Create account |
+| POST | /api/accounts/{id}/login | Login IG account |
+| GET | /api/targets | List report targets |
+| POST | /api/targets | Create target |
+| POST | /api/auto-report/start | Start auto-report |
+| POST | /api/auto-report/stop | Stop auto-report |
+| GET | /api/dashboard/stats | Dashboard stats |
+| GET | /api/auto-post/languages | Available languages |
+| POST | /api/auto-post/schedules | Create auto-post schedule |
+| GET | /api/auto-post/schedules | List schedules |
+| PATCH | /api/auto-post/schedules/{id} | Update schedule |
+| DELETE | /api/auto-post/schedules/{id} | Delete schedule |
+| POST | /api/auto-post/schedules/{id}/post-now | Trigger post immediately |
+| GET | /api/auto-post/history | Posting history |
+| POST | /api/auto-post/preview | Preview AI caption |
 
-### P1
-- Proxy support per account to avoid IP bans
-- Bulk URL import
-- Export report logs
-
-### P2
-- Scheduled reporting (time-based)
-- Webhook notifications for takedown events
-- Multi-language support
+## DB Collections
+- `ig_accounts`, `ig_sessions`, `report_targets`, `report_logs`
+- `monitor_checks`, `auto_report_state`
+- `auto_post_schedules`, `auto_post_history`
