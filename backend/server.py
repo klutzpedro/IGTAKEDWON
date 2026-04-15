@@ -1517,20 +1517,15 @@ async def generate_post_image(theme: str, language: str) -> bytes:
     raise Exception("Image generation failed")
 
 def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str) -> dict:
-    """Post image to Instagram using Playwright browser automation.
-    Logs in with username/password via browser, then uploads the post."""
-    from playwright.sync_api import sync_playwright
+    """Post image to Instagram. Tries instagrapi fresh login first, then Playwright browser as fallback."""
     import tempfile
     import time
 
-    chrome_path = "/app/.browsers/chromium-1208/chrome-linux/chrome"
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/.browsers"
-    if not os.path.exists(chrome_path):
-        return {"status": "failed", "message": "Chromium tidak tersedia."}
-
     username = account_data.get("username", "")
     password = account_data.get("password", "")
+    proxy = account_data.get("proxy", "")
     session_cookies = account_data.get("cookies", {})
+
     if not username or not password:
         return {"status": "failed", "message": "Username/password tidak tersedia."}
 
@@ -1540,7 +1535,59 @@ def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str
 
     timestamp = int(time.time())
 
+    # ===== METHOD 1: INSTAGRAPI FRESH LOGIN =====
     try:
+        from instagrapi import Client as IGClient
+        logger.info(f"AutoPost: Trying instagrapi fresh login for @{username}...")
+
+        cl = IGClient()
+        cl.delay_range = [2, 4]
+        cl.request_timeout = 30
+        cl.set_settings({
+            "user_agent": "Instagram 317.0.0.24.109 Android (33/13; 420dpi; 1080x2340; samsung; SM-G991B; o1s; exynos2100; en_US; 562830598)",
+            "device_settings": {
+                "app_version": "317.0.0.24.109",
+                "android_version": 33, "android_release": "13",
+                "dpi": "420dpi", "resolution": "1080x2340",
+                "manufacturer": "samsung", "device": "o1s",
+                "model": "SM-G991B", "cpu": "exynos2100",
+                "version_code": "562830598"
+            }
+        })
+        if proxy:
+            cl.set_proxy(proxy)
+
+        cl.login(username, password)
+        logger.info(f"AutoPost: Instagrapi login successful for @{username}")
+
+        # Upload photo
+        media = cl.photo_upload(temp_path, caption=caption)
+        os.unlink(temp_path)
+
+        logger.info(f"AutoPost: Photo uploaded! Media ID: {media.pk}, Code: {media.code}")
+        return {
+            "status": "success",
+            "message": f"Posting berhasil! Media: instagram.com/p/{media.code}",
+            "media_id": str(media.pk),
+            "media_code": media.code,
+        }
+
+    except Exception as e1:
+        err1 = str(e1)[:300]
+        logger.warning(f"AutoPost: Instagrapi method failed: {err1}")
+
+    # ===== METHOD 2: PLAYWRIGHT BROWSER =====
+    try:
+        from playwright.sync_api import sync_playwright
+
+        chrome_path = "/app/.browsers/chromium-1208/chrome-linux/chrome"
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/.browsers"
+        if not os.path.exists(chrome_path):
+            os.unlink(temp_path)
+            return {"status": "failed", "message": f"Instagrapi gagal: {err1}. Chromium juga tidak tersedia."}
+
+        logger.info("AutoPost: Trying Playwright browser method...")
+
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
@@ -1551,161 +1598,53 @@ def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str
                 viewport={"width": 1280, "height": 900},
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             )
+
+            # Set session cookies if available
+            if session_cookies.get("sessionid"):
+                all_cookies = [
+                    {"name": "sessionid", "value": session_cookies["sessionid"], "domain": ".instagram.com", "path": "/"},
+                    {"name": "csrftoken", "value": session_cookies.get("csrftoken", ""), "domain": ".instagram.com", "path": "/"},
+                    {"name": "ds_user_id", "value": str(session_cookies.get("ds_user_id", "")), "domain": ".instagram.com", "path": "/"},
+                    {"name": "ig_nrcb", "value": "1", "domain": ".instagram.com", "path": "/"},
+                ]
+                for k in ["mid", "ig_did", "rur"]:
+                    if session_cookies.get(k):
+                        all_cookies.append({"name": k, "value": session_cookies[k], "domain": ".instagram.com", "path": "/"})
+                ctx.add_cookies(all_cookies)
+
             page = ctx.new_page()
 
             try:
-                # === STEP 1: LOGIN VIA BROWSER ===
-                logger.info(f"AutoPost Browser: Setting cookies and navigating...")
-
-                # Set session cookies if available (helps avoid re-login)
-                if session_cookies.get("sessionid"):
-                    all_cookies = [
-                        {"name": "sessionid", "value": session_cookies["sessionid"], "domain": ".instagram.com", "path": "/"},
-                        {"name": "csrftoken", "value": session_cookies.get("csrftoken", ""), "domain": ".instagram.com", "path": "/"},
-                        {"name": "ds_user_id", "value": str(session_cookies.get("ds_user_id", "")), "domain": ".instagram.com", "path": "/"},
-                        {"name": "ig_nrcb", "value": "1", "domain": ".instagram.com", "path": "/"},
-                    ]
-                    for k in ["mid", "ig_did", "rur"]:
-                        if session_cookies.get(k):
-                            all_cookies.append({"name": k, "value": session_cookies[k], "domain": ".instagram.com", "path": "/"})
-                    ctx.add_cookies(all_cookies)
-
-                # Navigate to homepage
+                # Step 1: Establish session (like reporting does)
                 page.goto("https://www.instagram.com/", wait_until="domcontentloaded", timeout=30000)
-                time.sleep(4)
+                time.sleep(3)
 
-                # Determine page state and handle accordingly
-                page_text = page.content().lower()
-                current_url = page.url.lower()
+                # Step 2: Navigate to user's own profile (avoids profile selection screen)
+                page.goto(f"https://www.instagram.com/{username}/", wait_until="domcontentloaded", timeout=20000)
+                time.sleep(3)
 
-                logged_in = False
-
-                # Case 1: Check if we're on the actual feed (sidebar with Home, Explore, etc.)
-                if "/accounts/login" not in current_url:
-                    # Detect profile selection screen (has "Use another profile" or "Create new account")
-                    is_profile_selection = "use another profile" in page_text or "create new account" in page_text or "gunakan profil lain" in page_text
-                    
-                    if not is_profile_selection:
-                        # Might be the actual feed
-                        has_sidebar = any(x in page_text[:5000] for x in ["home</span>", "explore</span>", "search</span>", "reels</span>"])
-                        if has_sidebar:
-                            logged_in = True
-                            logger.info("AutoPost Browser: Already logged in to feed!")
-                    
-                    if not logged_in:
-                        # Profile selection screen - click Continue then enter password
-                        logger.info("AutoPost Browser: Profile selection screen detected...")
-                        for cont_sel in ['div[role="button"]:has-text("Continue")', 'button:has-text("Continue")', 'button:has-text("Lanjutkan")']:
-                            try:
-                                el = page.locator(cont_sel).first
-                                if el.is_visible(timeout=2000):
-                                    el.click(force=True)
-                                    logger.info(f"AutoPost Browser: Clicked Continue")
-                                    time.sleep(4)
-                                    # Enter password in the modal that appears
-                                    try:
-                                        pi = page.locator('input[name="password"], input[type="password"]').first
-                                        if pi.is_visible(timeout=3000):
-                                            logger.info("AutoPost Browser: Entering password...")
-                                            pi.fill(password)
-                                            time.sleep(0.5)
-                                            # Click Log in button - try multiple selectors
-                                            login_clicked = False
-                                            for lb in ['button[type="submit"]', 'button:has-text("Log in")', 'button:has-text("Log In")', 'button:has-text("Masuk")']:
-                                                try:
-                                                    lbtn = page.locator(lb).first
-                                                    if lbtn.is_visible(timeout=2000):
-                                                        lbtn.click(force=True)
-                                                        login_clicked = True
-                                                        logger.info(f"AutoPost Browser: Login button clicked via {lb}")
-                                                        time.sleep(8)
-                                                        logged_in = True
-                                                        break
-                                                except:
-                                                    continue
-                                            if not login_clicked:
-                                                # Try pressing Enter key
-                                                page.keyboard.press("Enter")
-                                                logger.info("AutoPost Browser: Pressed Enter for login")
-                                                time.sleep(8)
-                                                logged_in = True
-                                    except:
-                                        # If no password modal, might already be entering feed
-                                        time.sleep(5)
-                                        if "/accounts/login" not in page.url.lower():
-                                            logged_in = True
-                                    break
-                            except:
-                                continue
-
-                # Case 2: Login page - only if not yet logged in
-                if not logged_in:
-                    logger.info(f"AutoPost Browser: Attempting login from current page...")
-                    try:
-                        user_input = page.locator('input[name="username"]').first
-                        if user_input.is_visible(timeout=3000):
-                            pass_input = page.locator('input[name="password"]').first
-                            user_input.fill(username)
-                            time.sleep(0.5)
-                            pass_input.fill(password)
-                            time.sleep(0.5)
-                            page.locator('button[type="submit"]').first.click()
-                            time.sleep(8)
-                            logged_in = True
-                        else:
-                            # No login form visible, maybe we're actually logged in after all
-                            if "/accounts/login" not in page.url.lower() and "challenge" not in page.url.lower():
-                                logged_in = True
-                                logger.info("AutoPost Browser: No login form, assuming logged in")
-                    except Exception as le:
-                        logger.error(f"AutoPost Browser: Login error: {le}")
-                        # Last check: if URL is not login page, we might be logged in
-                        if "/accounts/login" not in page.url.lower() and "challenge" not in page.url.lower():
-                            logged_in = True
-
-                if not logged_in:
-                    ss = f"postfail_login_{timestamp}.png"
-                    try:
-                        page.screenshot(path=f"/app/backend/screenshots/{ss}", full_page=False)
-                    except:
-                        ss = ""
+                if "login" in page.url.lower():
                     browser.close()
                     os.unlink(temp_path)
-                    return {"status": "failed", "message": "Login browser gagal. Cek screenshot.", "screenshot": ss}
-
-                # Check for challenge/2FA
-                if "challenge" in page.url.lower():
-                    ss = f"postfail_challenge_{timestamp}.png"
-                    try:
-                        page.screenshot(path=f"/app/backend/screenshots/{ss}", full_page=False)
-                    except:
-                        ss = ""
-                    browser.close()
-                    os.unlink(temp_path)
-                    return {"status": "failed", "message": "Instagram meminta verifikasi/2FA. Login manual dulu via browser.", "screenshot": ss}
+                    return {"status": "failed", "message": f"Instagrapi gagal: {err1}. Browser: session expired."}
 
                 # Dismiss popups
-                for sel in ['button:has-text("Not Now")', 'button:has-text("Not now")', 'button:has-text("Tidak sekarang")', 'button:has-text("Save Info")']:
+                for sel in ['button:has-text("Not Now")', 'button:has-text("Not now")']:
                     try:
                         el = page.locator(sel).first
-                        if el.is_visible(timeout=2000):
+                        if el.is_visible(timeout=1500):
                             el.click(force=True)
-                            time.sleep(1)
+                            time.sleep(0.5)
                     except:
                         pass
 
-                logger.info(f"AutoPost Browser: Logged in! URL: {page.url}")
-                try:
-                    page.screenshot(path=f"/app/backend/screenshots/postdebug_feed_{timestamp}.png", full_page=False)
-                except:
-                    pass
-
-                # === STEP 2: CLICK CREATE POST ===
-                logger.info("AutoPost Browser: Looking for Create button...")
-                time.sleep(2)
+                # Step 3: Find and click Create button from profile page
                 create_clicked = False
-
-                for sel in ['svg[aria-label="New post"]', 'svg[aria-label="New Post"]', 'svg[aria-label="Postingan baru"]', 'a[href="/create/style/"]', 'a[href="/create/select/"]']:
+                for sel in [
+                    'svg[aria-label="New post"]', 'svg[aria-label="New Post"]',
+                    'svg[aria-label="Postingan baru"]',
+                    'a[href="/create/style/"]', 'a[href="/create/select/"]',
+                ]:
                     try:
                         el = page.locator(sel).first
                         if el.is_visible(timeout=2000):
@@ -1717,6 +1656,7 @@ def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str
                     except:
                         continue
 
+                # Try sidebar links
                 if not create_clicked:
                     try:
                         for link in page.locator('a[role="link"]').all():
@@ -1730,6 +1670,7 @@ def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str
                     except:
                         pass
 
+                # Try span text
                 if not create_clicked:
                     try:
                         for span in page.locator('span').all():
@@ -1751,15 +1692,14 @@ def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str
                         ss = ""
                     browser.close()
                     os.unlink(temp_path)
-                    return {"status": "failed", "message": "Tombol Create tidak ditemukan. Cek screenshot.", "screenshot": ss}
+                    return {"status": "failed", "message": f"Instagrapi gagal: {err1}. Browser: Create button tidak ditemukan.", "screenshot": ss}
 
-                # === STEP 3: UPLOAD IMAGE ===
-                logger.info("AutoPost Browser: Uploading image...")
+                # Step 4: Upload image
                 file_uploaded = False
                 try:
                     page.locator('input[type="file"]').first.set_input_files(temp_path)
                     file_uploaded = True
-                    logger.info("AutoPost Browser: Image uploaded via file input")
+                    logger.info("AutoPost Browser: Image uploaded")
                     time.sleep(4)
                 except:
                     pass
@@ -1773,7 +1713,7 @@ def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str
                                     btn.click(force=True)
                                 fc_info.value.set_files(temp_path)
                                 file_uploaded = True
-                                logger.info(f"AutoPost Browser: Image via filechooser ({btn_text})")
+                                logger.info(f"AutoPost Browser: Image via filechooser")
                                 time.sleep(4)
                                 break
                         except:
@@ -1787,34 +1727,24 @@ def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str
                         ss = ""
                     browser.close()
                     os.unlink(temp_path)
-                    return {"status": "failed", "message": "Gagal upload gambar. Cek screenshot.", "screenshot": ss}
+                    return {"status": "failed", "message": f"Instagrapi gagal: {err1}. Browser: upload gagal.", "screenshot": ss}
 
-                # === STEP 4: NEXT BUTTONS ===
-                logger.info("AutoPost Browser: Navigating steps...")
+                # Step 5: Next buttons
                 for step in range(5):
                     time.sleep(2)
-                    clicked = False
                     for ns in ['button:has-text("Next")', 'button:has-text("Lanjut")', 'div[role="button"]:has-text("Next")']:
                         try:
                             btn = page.locator(ns).first
                             if btn.is_visible(timeout=2000):
                                 btn.click(force=True)
-                                clicked = True
-                                logger.info(f"AutoPost Browser: Next (step {step+1})")
+                                logger.info(f"AutoPost Browser: Next step {step+1}")
                                 time.sleep(2)
                                 break
                         except:
                             continue
-                    if not clicked:
-                        try:
-                            if page.locator('button:has-text("Share"), button:has-text("Bagikan")').first.is_visible(timeout=1000):
-                                break
-                        except:
-                            pass
 
-                # === STEP 5: CAPTION ===
-                logger.info("AutoPost Browser: Entering caption...")
-                for sel in ['div[aria-label="Write a caption..."]', 'div[aria-label="Tulis keterangan..."]', 'div[role="textbox"][contenteditable="true"]', 'textarea[aria-label="Write a caption..."]', 'textarea']:
+                # Step 6: Caption
+                for sel in ['div[aria-label="Write a caption..."]', 'div[aria-label="Tulis keterangan..."]', 'div[role="textbox"][contenteditable="true"]', 'textarea']:
                     try:
                         el = page.locator(sel).first
                         if el.is_visible(timeout=2000):
@@ -1824,16 +1754,15 @@ def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str
                                 el.fill(caption[:2200])
                             except:
                                 page.keyboard.type(caption[:2200], delay=3)
-                            logger.info(f"AutoPost Browser: Caption entered via {sel}")
+                            logger.info(f"AutoPost Browser: Caption entered")
                             time.sleep(1)
                             break
                     except:
                         continue
 
-                # === STEP 6: SHARE ===
-                logger.info("AutoPost Browser: Clicking Share...")
+                # Step 7: Share
                 shared = False
-                for ss_sel in ['button:has-text("Share")', 'button:has-text("Bagikan")', 'div[role="button"]:has-text("Share")']:
+                for ss_sel in ['button:has-text("Share")', 'button:has-text("Bagikan")']:
                     try:
                         btn = page.locator(ss_sel).first
                         if btn.is_visible(timeout=3000):
@@ -1845,7 +1774,7 @@ def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str
                     except:
                         continue
 
-                # === STEP 7: RESULT ===
+                # Step 8: Result
                 time.sleep(3)
                 page_text = page.content().lower()
                 ss = f"autopost_result_{timestamp}.png"
@@ -1862,13 +1791,13 @@ def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str
                 os.unlink(temp_path)
 
                 if confirmed:
-                    return {"status": "success", "message": "Posting berhasil!", "screenshot": ss, "media_code": ""}
+                    return {"status": "success", "message": "Posting berhasil via browser!", "screenshot": ss, "media_code": ""}
                 elif shared:
                     return {"status": "success", "message": "Share diklik. Cek screenshot.", "screenshot": ss, "media_code": ""}
                 else:
-                    return {"status": "failed", "message": "Posting flow tidak selesai. Cek screenshot.", "screenshot": ss}
+                    return {"status": "failed", "message": f"Instagrapi gagal: {err1}. Browser: posting flow tidak selesai.", "screenshot": ss}
 
-            except Exception as e:
+            except Exception as e2:
                 ss = f"postfail_{timestamp}.png"
                 try:
                     page.screenshot(path=f"/app/backend/screenshots/{ss}", full_page=False)
@@ -1876,14 +1805,14 @@ def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str
                     ss = ""
                 browser.close()
                 os.unlink(temp_path)
-                return {"status": "failed", "message": f"Browser error: {str(e)[:250]}", "screenshot": ss}
+                return {"status": "failed", "message": f"Instagrapi: {err1}. Browser: {str(e2)[:200]}", "screenshot": ss}
 
-    except Exception as e:
+    except Exception as e3:
         try:
             os.unlink(temp_path)
         except:
             pass
-        return {"status": "failed", "message": f"Error: {str(e)[:300]}"}
+        return {"status": "failed", "message": f"Instagrapi: {err1}. Browser: {str(e3)[:200]}"}
 
 async def execute_auto_post(schedule: dict) -> dict:
     """Full auto-post flow: generate image + caption, then post to Instagram."""
@@ -1931,6 +1860,7 @@ async def execute_auto_post(schedule: dict) -> dict:
         account_data = {
             "username": account["username"],
             "password": account["password"],
+            "proxy": account.get("proxy", ""),
             "cookies": session_cookies,
         }
         loop = asyncio.get_event_loop()
