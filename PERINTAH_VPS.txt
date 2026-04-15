@@ -1,0 +1,189 @@
+# ============================================================
+# PERINTAH VPS - COPY PASTE SATU PER SATU
+# ============================================================
+# Buka Terminal di komputer Anda, lalu ikuti langkah berikut:
+
+
+# ============================================================
+# LANGKAH 1: LOGIN KE VPS
+# ============================================================
+# Copy-paste di Terminal komputer Anda:
+
+ssh root@147.93.81.36
+
+
+# ============================================================
+# LANGKAH 2: DOWNLOAD INSTALLER + KODE DARI EMERGENT
+# (jalankan di dalam VPS setelah login)
+# ============================================================
+
+# Download kode project (dari Emergent preview)
+mkdir -p /root/ig-reporter && cd /root/ig-reporter
+curl -L "https://harm-tracker-ig.preview.emergentagent.com/api/download-code" -o /tmp/code.tar.gz 2>/dev/null || true
+
+
+# ============================================================
+# LANGKAH 3: UPDATE SISTEM (copy semua baris sekaligus)
+# ============================================================
+
+apt update -y && apt upgrade -y && apt install -y curl wget git build-essential software-properties-common nginx lsb-release gnupg unzip
+
+
+# ============================================================
+# LANGKAH 4: INSTALL PYTHON 3.11 (copy semua baris sekaligus)
+# ============================================================
+
+add-apt-repository ppa:deadsnakes/ppa -y && apt update -y && apt install -y python3.11 python3.11-venv python3.11-dev && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && python3 --version
+
+
+# ============================================================
+# LANGKAH 5: INSTALL NODE.JS + YARN (copy semua baris sekaligus)
+# ============================================================
+
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt install -y nodejs && npm install -g yarn && node --version && yarn --version
+
+
+# ============================================================
+# LANGKAH 6: INSTALL MONGODB (copy semua baris sekaligus)
+# ============================================================
+
+curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg && echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-7.0.list && apt update -y && apt install -y mongodb-org && systemctl start mongod && systemctl enable mongod && mongosh --quiet --eval "db.runCommand({ping:1})"
+
+
+# ============================================================
+# LANGKAH 7: TRANSFER KODE DARI KOMPUTER KE VPS
+# ============================================================
+
+# OPSI A - Jika sudah push ke GitHub dari Emergent:
+cd /root && git clone https://github.com/USERNAME/REPO_NAME.git ig-reporter && cd ig-reporter
+
+# OPSI B - Upload manual via SCP dari komputer Anda:
+# (jalankan di Terminal KOMPUTER, bukan VPS)
+# Pertama download kode dari Emergent, lalu:
+# scp -r /path/ke/folder/backend root@147.93.81.36:/root/ig-reporter/
+# scp -r /path/ke/folder/frontend root@147.93.81.36:/root/ig-reporter/
+
+
+# ============================================================
+# LANGKAH 8: SETUP BACKEND (copy semua baris sekaligus)
+# ============================================================
+
+cd /root/ig-reporter/backend && python3 -m venv /root/ig-venv && source /root/ig-venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt && pip install playwright && echo "Backend dependencies OK"
+
+
+# ============================================================
+# LANGKAH 9: INSTALL CHROMIUM (copy semua baris sekaligus)
+# ============================================================
+
+source /root/ig-venv/bin/activate && export PLAYWRIGHT_BROWSERS_PATH=/root/ig-browsers && mkdir -p /root/ig-browsers && playwright install chromium && playwright install-deps chromium && echo "Chromium OK"
+
+
+# ============================================================
+# LANGKAH 10: UPDATE KONFIGURASI (copy semua baris sekaligus)
+# ============================================================
+
+cd /root/ig-reporter/backend && sed -i 's|/app/.browsers/chromium-[0-9]*/chrome-linux/chrome|/root/ig-browsers/chromium-1208/chrome-linux/chrome|g' server.py && sed -i 's|/app/.browsers|/root/ig-browsers|g' server.py && sed -i 's|/pw-browsers|/root/ig-browsers|g' server.py && sed -i 's|/root/.venv/bin/python3|/root/ig-venv/bin/python3|g' server.py && echo "Path updated"
+
+# Buat .env backend
+cat > /root/ig-reporter/backend/.env << 'EOF'
+MONGO_URL="mongodb://localhost:27017"
+DB_NAME="ig_reporter"
+CORS_ORIGINS="*"
+EOF
+echo "Backend .env OK"
+
+
+# ============================================================
+# LANGKAH 11: TEST BACKEND (copy semua baris sekaligus)
+# ============================================================
+
+source /root/ig-venv/bin/activate && cd /root/ig-reporter/backend && export PLAYWRIGHT_BROWSERS_PATH=/root/ig-browsers && timeout 5 uvicorn server:app --host 0.0.0.0 --port 8001 &
+sleep 3 && curl -s http://localhost:8001/api/ && kill %1 2>/dev/null
+# Harus keluar: {"message":"Instagram Report Automation API"}
+
+
+# ============================================================
+# LANGKAH 12: SETUP FRONTEND (copy semua baris sekaligus)
+# ============================================================
+
+VPS_IP=$(hostname -I | awk '{print $1}') && cd /root/ig-reporter/frontend && cat > .env << EOF
+REACT_APP_BACKEND_URL=http://${VPS_IP}
+EOF
+yarn install && yarn build && echo "Frontend build OK"
+
+
+# ============================================================
+# LANGKAH 13: SETUP NGINX (copy SEMUA baris sekaligus dari sini sampai echo)
+# ============================================================
+
+VPS_IP=$(hostname -I | awk '{print $1}') && cat > /etc/nginx/sites-available/ig-reporter << NGINX
+server {
+    listen 80;
+    server_name ${VPS_IP};
+    root /root/ig-reporter/frontend/build;
+    index index.html;
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+    location /api {
+        proxy_pass http://127.0.0.1:8001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 300s;
+    }
+}
+NGINX
+ln -sf /etc/nginx/sites-available/ig-reporter /etc/nginx/sites-enabled/ && rm -f /etc/nginx/sites-enabled/default && nginx -t && systemctl restart nginx && systemctl enable nginx && echo "Nginx OK"
+
+
+# ============================================================
+# LANGKAH 14: SETUP AUTO-START SERVICE (copy SEMUA baris sekaligus)
+# ============================================================
+
+cat > /etc/systemd/system/ig-reporter.service << 'SERVICE'
+[Unit]
+Description=IG Reporter Backend
+After=network.target mongod.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/ig-reporter/backend
+Environment=PLAYWRIGHT_BROWSERS_PATH=/root/ig-browsers
+ExecStart=/root/ig-venv/bin/uvicorn server:app --host 0.0.0.0 --port 8001 --workers 1
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+systemctl daemon-reload && systemctl enable ig-reporter && systemctl start ig-reporter && sleep 3 && systemctl status ig-reporter
+
+
+# ============================================================
+# LANGKAH 15: VERIFIKASI SEMUA BERJALAN (copy semua baris sekaligus)
+# ============================================================
+
+echo "=== CEK MONGODB ===" && mongosh --quiet --eval "db.runCommand({ping:1})" && echo "=== CEK BACKEND ===" && curl -s http://localhost:8001/api/ && echo "" && echo "=== CEK FRONTEND ===" && curl -s -o /dev/null -w "HTTP %{http_code}" http://localhost && echo "" && VPS_IP=$(hostname -I | awk '{print $1}') && echo "" && echo "================================" && echo "SELESAI! Buka: http://${VPS_IP}" && echo "================================"
+
+
+# ============================================================
+# SELESAI!
+# Buka browser dan akses: http://IP_VPS_ANDA
+# ============================================================
+
+
+# ============================================================
+# PERINTAH SEHARI-HARI:
+# ============================================================
+# Cek status:     systemctl status ig-reporter
+# Restart:        systemctl restart ig-reporter
+# Lihat log:      journalctl -u ig-reporter -f
+# Stop:           systemctl stop ig-reporter
+# Restart nginx:  systemctl restart nginx
