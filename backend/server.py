@@ -1421,6 +1421,325 @@ async def get_monitor_checks(target_id: str, limit: int = 20):
     return checks
 
 
+# ============ AUTO POST - AI Generated Posts ============
+
+auto_post_scheduler_running = False
+auto_post_task = None
+
+class AutoPostScheduleCreate(BaseModel):
+    account_id: str
+    theme: str
+    language: str = "id"  # id, en, mixed
+    schedule_time: str = "13:00"  # HH:MM format
+    frequency: str = "daily"  # daily
+
+class AutoPostScheduleUpdate(BaseModel):
+    theme: Optional[str] = None
+    language: Optional[str] = None
+    schedule_time: Optional[str] = None
+    active: Optional[bool] = None
+
+LANGUAGES = [
+    {"id": "id", "label": "Bahasa Indonesia"},
+    {"id": "en", "label": "English"},
+    {"id": "mixed", "label": "Campuran ID + EN"},
+]
+
+async def generate_caption(theme: str, language: str) -> dict:
+    """Generate caption + trending hashtags using GPT 5.2."""
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+    api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    lang_instruction = {
+        "id": "Tulis dalam Bahasa Indonesia.",
+        "en": "Write in English.",
+        "mixed": "Tulis campuran Bahasa Indonesia dan English, natural seperti anak muda.",
+    }.get(language, "Tulis dalam Bahasa Indonesia.")
+
+    chat = LlmChat(
+        api_key=api_key,
+        session_id=f"autopost-{uuid.uuid4()}",
+        system_message="Kamu adalah social media content creator yang ahli membuat caption Instagram viral."
+    ).with_model("openai", "gpt-5.2")
+
+    prompt = f"""Buat caption Instagram untuk tema: "{theme}"
+
+Instruksi:
+- {lang_instruction}
+- Caption harus menarik, engaging, dan relevan dengan tema
+- Panjang 2-4 paragraf pendek
+- Akhiri dengan call-to-action
+- Tambahkan minimal 5 hashtag yang sedang TRENDING dan viral yang relevan dengan tema
+- Hashtag harus yang populer dan banyak dicari orang
+- Format: caption dulu, lalu hashtag di baris terakhir dipisah spasi
+
+Balas HANYA caption + hashtag, tanpa penjelasan lain."""
+
+    user_msg = UserMessage(text=prompt)
+    response = await chat.send_message(user_msg)
+    
+    # Extract caption and hashtags
+    text = response.strip()
+    lines = text.split("\n")
+    hashtag_line = ""
+    caption_lines = []
+    for line in lines:
+        if line.strip().startswith("#") and line.count("#") >= 3:
+            hashtag_line = line.strip()
+        else:
+            caption_lines.append(line)
+    
+    caption = "\n".join(caption_lines).strip()
+    if not hashtag_line:
+        hashtag_line = caption.split("\n")[-1] if "#" in caption.split("\n")[-1] else ""
+        if hashtag_line:
+            caption = "\n".join(caption.split("\n")[:-1]).strip()
+    
+    return {"caption": caption, "hashtags": hashtag_line, "full_text": f"{caption}\n\n{hashtag_line}"}
+
+async def generate_post_image(theme: str, language: str) -> bytes:
+    """Generate post image using GPT Image 1."""
+    from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
+
+    api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    image_gen = OpenAIImageGeneration(api_key=api_key)
+
+    prompt = f"Create a stunning, professional Instagram post image about: {theme}. Make it visually striking, modern, suitable for social media. High quality, vibrant colors, eye-catching design. Do NOT include any text or words in the image."
+
+    images = await image_gen.generate_images(
+        prompt=prompt,
+        model="gpt-image-1",
+        number_of_images=1
+    )
+
+    if images and len(images) > 0:
+        return images[0]
+    raise Exception("Image generation failed")
+
+def _sync_post_to_instagram(cookies: dict, image_bytes: bytes, caption: str, proxy: str = "") -> dict:
+    """Post image to Instagram using instagrapi. Runs in thread pool."""
+    import tempfile
+    try:
+        from instagrapi import Client as IGClient
+        
+        cl = IGClient()
+        cl.delay_range = [1, 3]
+        if proxy:
+            cl.set_proxy(proxy)
+
+        # Restore session from cookies
+        settings = cookies.get("_settings", {})
+        if settings:
+            cl.set_settings(settings)
+            cl.login(cookies.get("_username", ""), cookies.get("_password", ""))
+        else:
+            return {"status": "failed", "message": "Session tidak tersedia"}
+
+        # Save image to temp file
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            f.write(image_bytes)
+            temp_path = f.name
+
+        # Upload photo
+        media = cl.photo_upload(temp_path, caption=caption)
+        os.unlink(temp_path)
+
+        return {
+            "status": "success",
+            "message": f"Posted! Media ID: {media.pk}",
+            "media_id": str(media.pk),
+            "media_code": media.code,
+        }
+    except Exception as e:
+        return {"status": "failed", "message": str(e)[:300]}
+
+async def execute_auto_post(schedule: dict) -> dict:
+    """Full auto-post flow: generate image + caption, then post to Instagram."""
+    try:
+        # Get account info
+        account = await db.ig_accounts.find_one({"id": schedule["account_id"]}, {"_id": 0})
+        if not account:
+            return {"status": "failed", "message": "Akun tidak ditemukan"}
+
+        session_doc = await db.ig_sessions.find_one({"account_id": account["id"]}, {"_id": 0})
+        if not session_doc or not session_doc.get("settings"):
+            return {"status": "failed", "message": "Session tidak tersedia. Login ulang."}
+
+        # Step 1: Generate caption
+        logger.info(f"AutoPost: Generating caption for '{schedule['theme']}'...")
+        caption_data = await generate_caption(schedule["theme"], schedule.get("language", "id"))
+
+        # Step 2: Generate image
+        logger.info(f"AutoPost: Generating image for '{schedule['theme']}'...")
+        image_bytes = await generate_post_image(schedule["theme"], schedule.get("language", "id"))
+
+        # Save image as proof
+        img_name = f"autopost_{schedule['id']}_{int(__import__('time').time())}.jpg"
+        img_path = f"/app/backend/screenshots/{img_name}"
+        with open(img_path, "wb") as f:
+            f.write(image_bytes)
+
+        # Step 3: Post to Instagram
+        logger.info(f"AutoPost: Posting to @{account['username']}...")
+        cookies_data = {
+            "_settings": session_doc["settings"],
+            "_username": account["username"],
+            "_password": account["password"],
+        }
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            ig_executor, _sync_post_to_instagram,
+            cookies_data, image_bytes, caption_data["full_text"], account.get("proxy", "")
+        )
+
+        # Save to history
+        history_doc = {
+            "id": str(uuid.uuid4()),
+            "schedule_id": schedule["id"],
+            "account_username": account["username"],
+            "theme": schedule["theme"],
+            "caption": caption_data["full_text"],
+            "hashtags": caption_data["hashtags"],
+            "image": img_name,
+            "status": result["status"],
+            "message": result["message"],
+            "media_code": result.get("media_code", ""),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.auto_post_history.insert_one(history_doc)
+
+        # Update schedule
+        await db.auto_post_schedules.update_one(
+            {"id": schedule["id"]},
+            {"$set": {"last_posted_at": datetime.now(timezone.utc).isoformat(), "last_status": result["status"]}}
+        )
+
+        return result
+    except Exception as e:
+        logger.error(f"AutoPost error: {e}")
+        error_doc = {
+            "id": str(uuid.uuid4()),
+            "schedule_id": schedule.get("id", ""),
+            "account_username": "",
+            "theme": schedule.get("theme", ""),
+            "caption": "", "hashtags": "", "image": "",
+            "status": "failed", "message": str(e)[:300],
+            "media_code": "",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.auto_post_history.insert_one(error_doc)
+        return {"status": "failed", "message": str(e)[:300]}
+
+async def auto_post_scheduler_worker():
+    """Background scheduler: checks every 60s if any post is due."""
+    global auto_post_scheduler_running
+    logger.info("Auto-post scheduler started")
+    
+    while auto_post_scheduler_running:
+        try:
+            now = datetime.now(timezone.utc)
+            current_time = now.strftime("%H:%M")
+            
+            schedules = await db.auto_post_schedules.find(
+                {"active": True}, {"_id": 0}
+            ).to_list(100)
+            
+            for schedule in schedules:
+                if not auto_post_scheduler_running:
+                    break
+                
+                sched_time = schedule.get("schedule_time", "")
+                if sched_time != current_time:
+                    continue
+                
+                # Check if already posted today
+                last_posted = schedule.get("last_posted_at", "")
+                if last_posted:
+                    last_date = last_posted[:10]
+                    today_date = now.isoformat()[:10]
+                    if last_date == today_date:
+                        continue
+                
+                logger.info(f"AutoPost: Time to post! Schedule '{schedule['theme']}' at {sched_time}")
+                await execute_auto_post(schedule)
+            
+            await asyncio.sleep(60)
+        except Exception as e:
+            logger.error(f"Auto-post scheduler error: {e}")
+            await asyncio.sleep(60)
+
+# --- Auto Post API Endpoints ---
+@api_router.get("/auto-post/languages")
+async def get_languages():
+    return LANGUAGES
+
+@api_router.post("/auto-post/schedules")
+async def create_schedule(data: AutoPostScheduleCreate):
+    account = await db.ig_accounts.find_one({"id": data.account_id}, {"_id": 0})
+    if not account:
+        raise HTTPException(404, "Akun tidak ditemukan")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "account_id": data.account_id,
+        "account_username": account["username"],
+        "theme": data.theme,
+        "language": data.language,
+        "schedule_time": data.schedule_time,
+        "frequency": data.frequency,
+        "active": True,
+        "last_posted_at": None,
+        "last_status": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.auto_post_schedules.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api_router.get("/auto-post/schedules")
+async def list_schedules():
+    return await db.auto_post_schedules.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
+
+@api_router.patch("/auto-post/schedules/{schedule_id}")
+async def update_schedule(schedule_id: str, data: AutoPostScheduleUpdate):
+    update = {}
+    if data.theme is not None: update["theme"] = data.theme
+    if data.language is not None: update["language"] = data.language
+    if data.schedule_time is not None: update["schedule_time"] = data.schedule_time
+    if data.active is not None: update["active"] = data.active
+    if not update:
+        raise HTTPException(400, "Tidak ada data untuk diupdate")
+    await db.auto_post_schedules.update_one({"id": schedule_id}, {"$set": update})
+    return await db.auto_post_schedules.find_one({"id": schedule_id}, {"_id": 0})
+
+@api_router.delete("/auto-post/schedules/{schedule_id}")
+async def delete_schedule(schedule_id: str):
+    r = await db.auto_post_schedules.delete_one({"id": schedule_id})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "Schedule tidak ditemukan")
+    return {"message": "Schedule dihapus"}
+
+@api_router.post("/auto-post/schedules/{schedule_id}/post-now")
+async def post_now(schedule_id: str):
+    schedule = await db.auto_post_schedules.find_one({"id": schedule_id}, {"_id": 0})
+    if not schedule:
+        raise HTTPException(404, "Schedule tidak ditemukan")
+    result = await execute_auto_post(schedule)
+    if result["status"] == "failed":
+        raise HTTPException(400, result["message"])
+    return result
+
+@api_router.get("/auto-post/history")
+async def get_post_history(limit: int = 30, schedule_id: Optional[str] = None):
+    q = {"schedule_id": schedule_id} if schedule_id else {}
+    return await db.auto_post_history.find(q, {"_id": 0}).sort("created_at", -1).to_list(limit)
+
+@api_router.post("/auto-post/preview")
+async def preview_post(theme: str, language: str = "id"):
+    """Generate a preview (caption only, no image) to see what AI would create."""
+    caption_data = await generate_caption(theme, language)
+    return caption_data
+
+
 app.include_router(api_router)
 app.add_middleware(CORSMiddleware, allow_credentials=True,
     allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
@@ -1457,10 +1776,17 @@ async def startup_event():
     monitor_task = asyncio.create_task(monitor_worker())
     logger.info("Auto-monitor started on server startup (every 3 hours)")
 
+    # Start auto-post scheduler
+    global auto_post_scheduler_running, auto_post_task
+    auto_post_scheduler_running = True
+    auto_post_task = asyncio.create_task(auto_post_scheduler_worker())
+    logger.info("Auto-post scheduler started")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    global auto_report_running, monitor_running
+    global auto_report_running, monitor_running, auto_post_scheduler_running
     auto_report_running = False
     monitor_running = False
+    auto_post_scheduler_running = False
     ig_executor.shutdown(wait=False)
     client.close()

@@ -7,6 +7,7 @@ import Dashboard from "@/pages/Dashboard";
 import Accounts from "@/pages/Accounts";
 import Reports from "@/pages/Reports";
 import Monitoring from "@/pages/Monitoring";
+import AutoPost from "@/pages/AutoPost";
 
 function App() {
   const [autoReportRunning, setAutoReportRunning] = useState(false);
@@ -30,6 +31,7 @@ function App() {
               <Route path="/accounts" element={<Accounts />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/monitoring" element={<Monitoring />} />
+              <Route path="/auto-post" element={<AutoPost />} />
             </Routes>
           </div>
         </main>

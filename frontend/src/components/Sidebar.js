@@ -6,6 +6,7 @@ import {
   ListChecks,
   Lightning,
   InstagramLogo,
+  PaperPlaneRight,
 } from "@phosphor-icons/react";
 
 const navItems = [
@@ -13,6 +14,7 @@ const navItems = [
   { to: "/accounts", icon: UserCircle, label: "Akun Instagram" },
   { to: "/reports", icon: Flag, label: "Laporan" },
   { to: "/monitoring", icon: ListChecks, label: "Monitoring" },
+  { to: "/auto-post", icon: PaperPlaneRight, label: "Auto Post" },
 ];
 
 export default function Sidebar({ autoReportRunning }) {
