@@ -1329,6 +1329,11 @@ async def list_accounts():
             acc["proxy_status"] = ""
             acc["proxy_ip"] = ""
             acc["proxy_checked_at"] = ""
+        # Session status is already in ig_accounts (updated by health worker)
+        if not acc.get("session_status"):
+            acc["session_status"] = ""
+        if not acc.get("session_message"):
+            acc["session_message"] = ""
     return accounts
 
 @api_router.delete("/accounts/{account_id}")
@@ -1602,9 +1607,9 @@ proxy_check_task = None
 PROXY_CHECK_INTERVAL = 10 * 60  # Check every 10 minutes
 
 async def proxy_health_worker():
-    """Background worker: checks all account proxies every 10 minutes."""
+    """Background worker: checks all account proxies AND session health every 10 minutes."""
     global proxy_check_running
-    logger.info("Proxy health worker started (every 10 min)")
+    logger.info("Account health worker started (proxy + session, every 10 min)")
 
     while proxy_check_running:
         try:
@@ -1620,9 +1625,10 @@ async def proxy_health_worker():
                 if not proxy_check_running:
                     break
 
-                proxy = acc.get("proxy", "")
                 now_iso = datetime.now(timezone.utc).isoformat()
+                proxy = acc.get("proxy", "")
 
+                # --- Check Proxy ---
                 if proxy:
                     result = await loop.run_in_executor(ig_executor, _sync_check_proxy, proxy)
                     await db.proxy_status.update_one(
@@ -1639,21 +1645,92 @@ async def proxy_health_worker():
                         {"account_id": acc["id"]},
                         {"$set": {
                             "account_id": acc["id"],
-                            "status": "no_proxy",
-                            "ip": "",
-                            "message": "Tidak ada proxy",
+                            "status": "no_proxy", "ip": "", "message": "Tidak ada proxy",
                             "checked_at": now_iso,
                         }}, upsert=True)
 
-                checked += 1
-                await asyncio.sleep(1)  # Small delay between checks
+                # --- Check Session Health ---
+                session_doc = await db.ig_sessions.find_one({"account_id": acc["id"]}, {"_id": 0})
+                session_status = "no_session"
+                session_msg = "Belum login"
 
-            logger.info(f"Proxy health: {checked} akun dicek")
+                if session_doc and session_doc.get("settings"):
+                    cookies = _extract_browser_cookies(session_doc["settings"])
+                    if cookies.get("sessionid"):
+                        # Quick validation: test session via instagrapi API call
+                        check_result = await loop.run_in_executor(
+                            ig_executor, _sync_check_session,
+                            cookies["sessionid"], cookies.get("ds_user_id", ""),
+                            acc.get("proxy", "")
+                        )
+                        session_status = check_result["status"]
+                        session_msg = check_result["message"]
+                    else:
+                        session_status = "no_session"
+                        session_msg = "Session cookies kosong"
+                else:
+                    session_status = "no_session"
+                    session_msg = "Belum login"
+
+                # Update account status in DB based on session health
+                new_login_status = acc.get("login_status", "idle")
+                new_is_logged_in = acc.get("is_logged_in", False)
+
+                if session_status == "active":
+                    new_login_status = "logged_in"
+                    new_is_logged_in = True
+                elif session_status == "expired":
+                    new_login_status = "session_expired"
+                    new_is_logged_in = False
+                elif session_status == "no_session":
+                    new_login_status = "idle"
+                    new_is_logged_in = False
+
+                await db.ig_accounts.update_one({"id": acc["id"]}, {"$set": {
+                    "is_logged_in": new_is_logged_in,
+                    "login_status": new_login_status,
+                    "session_status": session_status,
+                    "session_message": session_msg,
+                    "session_checked_at": now_iso,
+                }})
+
+                checked += 1
+                await asyncio.sleep(1)
+
+            logger.info(f"Account health: {checked} akun dicek (proxy + session)")
             await asyncio.sleep(PROXY_CHECK_INTERVAL)
 
         except Exception as e:
-            logger.error(f"Proxy health worker error: {e}")
+            logger.error(f"Account health worker error: {e}")
             await asyncio.sleep(60)
+
+
+def _sync_check_session(session_id: str, ds_user_id: str, proxy: str) -> dict:
+    """Quick session validation by checking Instagram API. Runs in thread pool."""
+    import requests as req
+    try:
+        cookies = {"sessionid": session_id, "ds_user_id": ds_user_id}
+        headers = {
+            "User-Agent": "Instagram 317.0.0.24.109 Android (33/13; 420dpi; 1080x2340; samsung; SM-G991B; o1s; exynos2100; en_US; 562830598)",
+            "X-IG-App-ID": "936619743392459",
+        }
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        resp = req.get(
+            "https://i.instagram.com/api/v1/accounts/current_user/?edit=true",
+            cookies=cookies, headers=headers, proxies=proxies, timeout=15
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            username = data.get("user", {}).get("username", "")
+            return {"status": "active", "message": f"Session aktif (@{username})"}
+        elif resp.status_code == 401 or resp.status_code == 403:
+            return {"status": "expired", "message": "Session expired"}
+        else:
+            return {"status": "expired", "message": f"HTTP {resp.status_code}"}
+    except req.exceptions.Timeout:
+        return {"status": "unknown", "message": "Timeout cek session"}
+    except Exception as e:
+        return {"status": "unknown", "message": str(e)[:100]}
 
 
 def _sync_check_url(url: str) -> dict:

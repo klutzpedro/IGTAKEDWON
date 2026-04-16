@@ -33,6 +33,7 @@ const LOGIN_STATUS_MAP = {
   logging_in: { label: "Sedang Login...", color: "bg-blue-100 text-blue-700" },
   challenge_required: { label: "Verifikasi", color: "bg-amber-100 text-amber-700" },
   logged_in: { label: "Aktif", color: "bg-green-100 text-green-700" },
+  session_expired: { label: "Session Expired", color: "bg-red-100 text-red-700" },
   failed: { label: "Gagal", color: "bg-red-100 text-red-700" },
 };
 
@@ -338,9 +339,17 @@ export default function Accounts() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <span className={`inline-flex items-center text-xs px-2 py-1 rounded-md font-medium ${st.color}`}>
+                      <span
+                        className={`inline-flex items-center text-xs px-2 py-1 rounded-md font-medium ${st.color}`}
+                        title={acc.session_message || ""}
+                      >
                         {st.label}
                       </span>
+                      {acc.session_checked_at && (
+                        <div className="text-[10px] text-slate-400 mt-0.5">
+                          {new Date(acc.session_checked_at).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell>
                       {acc.proxy ? (
