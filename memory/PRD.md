@@ -21,53 +21,25 @@ Aplikasi otomasi Instagram yang bisa:
 - [x] Reporting via Playwright browser automation (desktop emulation)
 - [x] Round-robin multi-account x multi-target reporting
 - [x] Mode Variasi (pause after 15-20 success) & Manual
+- [x] **Mode Hopping** (Feb 2026): Setiap akun kirim 1 report saja, urutan acak (shuffle), jeda random 15-45 detik antar akun, auto-stop setelah semua selesai
 - [x] Auto-resume worker on server restart (MongoDB persistence)
 - [x] Screenshot proof of "Thanks for reporting" dialog
 - [x] Monitor worker (check every 3 hours)
-- [x] Dashboard with stats, recent logs, auto-report controls
+- [x] Dashboard with stats, recent logs, 3 mode auto-report controls
 - [x] **Auto Post Feature** (Feb 2026):
   - Schedule creation (account, theme, language, time)
-  - AI caption generation (GPT-5.2 via emergentintegrations) with trending hashtags
-  - AI image generation (GPT Image 1 via emergentintegrations)
-  - Instagram posting via instagrapi fresh login (photo_upload)
-  - Playwright browser as fallback method
-  - Background scheduler (checks every 60s, posts at scheduled time)
-  - History log with image proof and IG post link
-  - Preview caption feature
-  - Full CRUD for schedules
+  - AI caption generation (GPT-5.2) with trending hashtags
+  - AI image generation (GPT Image 1)
+  - Instagram posting via instagrapi fresh login
+  - Background scheduler + History log + Preview caption
   - Frontend UI page at /auto-post
-
-### Bug Fix (Feb 2026):
-- [x] Fixed: instagrapi `media/configure` returning 403 `login_required` - Root cause: stale session. Fix: fresh login before each posting attempt
-- [x] Fixed: Playwright browser posting failing due to profile selection screen on IG homepage
-- [x] Solution: Dual approach - instagrapi fresh login (primary) + Playwright browser (fallback)
 
 ### Backlog / Future
 - [ ] Multi-schedule per akun
 - [ ] Preview image sebelum posting
 - [ ] Retry logic untuk kegagalan posting
-- [ ] Analytics dashboard (posting success rate)
+- [ ] Analytics dashboard
 - [ ] Refactoring: Break server.py into modules
-
-## Key Endpoints
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | /api/accounts | List accounts |
-| POST | /api/accounts | Create account |
-| POST | /api/accounts/{id}/login | Login IG account |
-| GET | /api/targets | List report targets |
-| POST | /api/targets | Create target |
-| POST | /api/auto-report/start | Start auto-report |
-| POST | /api/auto-report/stop | Stop auto-report |
-| GET | /api/dashboard/stats | Dashboard stats |
-| GET | /api/auto-post/languages | Available languages |
-| POST | /api/auto-post/schedules | Create auto-post schedule |
-| GET | /api/auto-post/schedules | List schedules |
-| PATCH | /api/auto-post/schedules/{id} | Update schedule |
-| DELETE | /api/auto-post/schedules/{id} | Delete schedule |
-| POST | /api/auto-post/schedules/{id}/post-now | Trigger post immediately |
-| GET | /api/auto-post/history | Posting history |
-| POST | /api/auto-post/preview | Preview AI caption |
 
 ## DB Collections
 - `ig_accounts`, `ig_sessions`, `report_targets`, `report_logs`

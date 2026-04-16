@@ -779,9 +779,116 @@ auto_report_cycle_count = 0
 async def auto_report_worker():
     """Smart round-robin: rotates accounts across targets for maximum coverage.
     Each cycle: every account reports every target once.
-    Variasi: pause after 15-20 total successes, resume after 1 hour."""
+    Variasi: pause after 15-20 total successes, resume after 1 hour.
+    Hopping: each account sends ONE report with random order & random delays, then stops."""
     global auto_report_running, auto_report_cycle_count
     import random
+
+    # === HOPPING MODE ===
+    if auto_report_mode == "hopping":
+        logger.info("Auto-report HOPPING mode started")
+        try:
+            targets = await db.report_targets.find(
+                {"auto_report": True, "status": {"$nin": ["taken_down"]}}, {"_id": 0}).to_list(100)
+            accounts = await db.ig_accounts.find({"is_logged_in": True}, {"_id": 0}).to_list(100)
+
+            if not accounts or not targets:
+                logger.warning("Hopping: Tidak ada akun/target aktif")
+                auto_report_running = False
+                return
+
+            # Shuffle accounts randomly (hopping - tidak berurut)
+            random.shuffle(accounts)
+            n_accounts = len(accounts)
+            n_targets = len(targets)
+
+            logger.info(f"Hopping: {n_accounts} akun (acak), {n_targets} target")
+
+            await db.auto_report_state.update_one({"key": "state"}, {"$set": {
+                "running": True, "mode": "hopping", "paused": False,
+                "active_targets": n_targets, "active_accounts": n_accounts,
+                "cycle_success": 0, "cycle_limit": n_accounts,
+                "hopping_total": n_accounts, "hopping_done": 0,
+            }}, upsert=True)
+
+            hopping_done = 0
+
+            for idx, account in enumerate(accounts):
+                if not auto_report_running:
+                    break
+
+                # Pick a random target for this account
+                target = random.choice(targets)
+
+                # Random delay between accounts (15-45 seconds) to look natural
+                if idx > 0:
+                    delay = random.randint(15, 45)
+                    logger.info(f"Hopping: Jeda {delay}s sebelum akun berikutnya...")
+                    await db.auto_report_state.update_one({"key": "state"}, {"$set": {
+                        "hopping_wait": delay,
+                        "last_account": f"Menunggu {delay}s...",
+                    }}, upsert=True)
+                    for _ in range(delay):
+                        if not auto_report_running:
+                            break
+                        await asyncio.sleep(1)
+
+                if not auto_report_running:
+                    break
+
+                logger.info(f"Hopping [{idx+1}/{n_accounts}]: @{account['username']} -> {target.get('display_name','')}")
+
+                try:
+                    result = await perform_report(target, account)
+                except Exception as report_err:
+                    logger.error(f"Hopping report error: {report_err}")
+                    result = {"status": "failed", "message": f"Exception: {str(report_err)[:200]}"}
+
+                log_doc = {
+                    "id": str(uuid.uuid4()),
+                    "target_id": target["id"],
+                    "target_display": target.get("display_name", ""),
+                    "target_url": target.get("url", ""),
+                    "account_username": account["username"],
+                    "status": result["status"],
+                    "message": result["message"],
+                    "category": target.get("category", "spam"),
+                    "screenshot": result.get("screenshot", ""),
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                }
+                await db.report_logs.insert_one(log_doc)
+
+                if result["status"] == "success":
+                    await db.report_targets.update_one(
+                        {"id": target["id"]},
+                        {"$inc": {"total_reports_sent": 1},
+                         "$set": {"last_report_at": datetime.now(timezone.utc).isoformat(), "status": "reported"}})
+                    hopping_done += 1
+                    auto_report_cycle_count = hopping_done
+
+                await db.auto_report_state.update_one({"key": "state"}, {"$set": {
+                    "cycle_success": hopping_done,
+                    "hopping_done": idx + 1,
+                    "last_account": account["username"],
+                    "last_target": target.get("display_name", ""),
+                    "hopping_wait": 0,
+                }}, upsert=True)
+
+            # Hopping selesai - auto stop
+            logger.info(f"Hopping selesai! {hopping_done}/{n_accounts} berhasil")
+            auto_report_running = False
+            await db.auto_report_state.update_one({"key": "state"}, {"$set": {
+                "running": False, "paused": False,
+                "hopping_done": n_accounts, "hopping_wait": 0,
+            }}, upsert=True)
+            return
+
+        except Exception as e:
+            logger.error(f"Hopping error: {e}")
+            auto_report_running = False
+            return
+
+    # === MANUAL & VARIASI MODE (existing logic) ===
 
     cycle_success = 0
     cycle_limit = random.randint(15, 20)
@@ -1177,15 +1284,15 @@ async def list_reports(limit: int = 50, target_id: Optional[str] = None):
 
 # --- Auto Report ---
 class AutoReportStart(BaseModel):
-    mode: str = "manual"  # "manual" or "variasi"
+    mode: str = "manual"  # "manual", "variasi", or "hopping"
 
 @api_router.post("/auto-report/start")
 async def start_auto_report(data: AutoReportStart):
     global auto_report_running, auto_report_task, auto_report_mode, auto_report_cycle_count
     if auto_report_running:
         return {"message": "Sudah berjalan", "mode": auto_report_mode}
-    if data.mode not in ("manual", "variasi"):
-        raise HTTPException(400, "Mode harus 'manual' atau 'variasi'")
+    if data.mode not in ("manual", "variasi", "hopping"):
+        raise HTTPException(400, "Mode harus 'manual', 'variasi', atau 'hopping'")
     auto_report_mode = data.mode
     auto_report_running = True
     auto_report_cycle_count = 0

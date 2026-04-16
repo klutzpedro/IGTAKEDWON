@@ -11,6 +11,7 @@ import {
   Hand,
   Pause,
   XCircle,
+  Shuffle,
 } from "@phosphor-icons/react";
 import { StatsCard } from "../components/StatsCard";
 import { Badge } from "../components/ui/badge";
@@ -76,6 +77,8 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
       toast.success(
         mode === "variasi"
           ? "Auto-report (Variasi) dimulai - jeda otomatis setiap 15-20 report berhasil"
+          : mode === "hopping"
+          ? "Auto-report (Hopping) dimulai - setiap akun kirim 1 report, urutan acak, jeda random"
           : "Auto-report (Manual) dimulai - berjalan terus sampai distop manual"
       );
     } catch (e) {
@@ -164,6 +167,19 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
                     </p>
                   </div>
                 </DropdownMenuItem>
+                <DropdownMenuItem
+                  data-testid="start-hopping-btn"
+                  onClick={() => startAutoReport("hopping")}
+                  className="flex items-start gap-3 p-3 cursor-pointer"
+                >
+                  <Shuffle size={20} weight="duotone" className="text-green-600 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <p className="text-sm font-semibold text-slate-800">Hopping</p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Setiap akun kirim 1 report, urutan acak, jeda random 15-45 detik. Auto-stop setelah selesai
+                    </p>
+                  </div>
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           )}
@@ -182,15 +198,17 @@ export default function Dashboard({ autoReportRunning, setAutoReportRunning }) {
                 <p className="text-sm font-semibold text-slate-800">
                   {paused ? "Auto-Report Dijeda" : "Auto-Report Aktif"}
                   <span className="ml-2 text-xs font-normal px-2 py-0.5 rounded bg-slate-200 text-slate-600">
-                    {autoMode === "variasi" ? "Mode Variasi" : "Mode Manual"}
+                    {autoMode === "variasi" ? "Mode Variasi" : autoMode === "hopping" ? "Mode Hopping" : "Mode Manual"}
                   </span>
                 </p>
                 <p className="text-xs text-slate-500 mt-0.5">
                   {paused
                     ? `Dijeda setelah ${cycleCount} report berhasil. Lanjut otomatis ${resumeAt ? "pukul " + new Date(resumeAt).toLocaleTimeString("id-ID") : "dalam 1 jam"}`
-                    : autoMode === "variasi"
-                      ? `${cycleCount}/${cycleLimit} report berhasil dalam siklus ini. Jeda otomatis saat tercapai.`
-                      : "Berjalan terus sampai dihentikan manual."
+                    : autoMode === "hopping"
+                      ? `${cycleCount}/${activeAccounts} akun selesai. Urutan acak, jeda random. Auto-stop setelah semua selesai.`
+                      : autoMode === "variasi"
+                        ? `${cycleCount}/${cycleLimit} report berhasil dalam siklus ini. Jeda otomatis saat tercapai.`
+                        : "Berjalan terus sampai dihentikan manual."
                   }
                 </p>
               </div>
