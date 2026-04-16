@@ -15,6 +15,7 @@ import {
   CheckCircle,
   XCircle,
   CircleNotch,
+  PencilSimple,
 } from "@phosphor-icons/react";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
@@ -158,23 +159,25 @@ function ScheduleForm({ accounts, languages, onCreated }) {
   );
 }
 
-function PreviewModal({ open, onClose, theme, language }) {
+function PreviewModal({ open, onClose, schedule }) {
   const [loading, setLoading] = useState(false);
-  const [preview, setPreview] = useState(null);
+  const [lastPost, setLastPost] = useState(null);
 
   useEffect(() => {
-    if (open && theme) {
+    if (open && schedule) {
       setLoading(true);
-      setPreview(null);
+      setLastPost(null);
       axios
-        .post(`${API}/auto-post/preview?theme=${encodeURIComponent(theme)}&language=${language}`)
-        .then((res) => setPreview(res.data))
-        .catch(() => toast.error("Gagal generate preview"))
+        .get(`${API}/auto-post/history?schedule_id=${schedule.id}&limit=1`)
+        .then((res) => {
+          if (res.data && res.data.length > 0) setLastPost(res.data[0]);
+        })
+        .catch(() => {})
         .finally(() => setLoading(false));
     }
-  }, [open, theme, language]);
+  }, [open, schedule]);
 
-  if (!open) return null;
+  if (!open || !schedule) return null;
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
@@ -184,30 +187,161 @@ function PreviewModal({ open, onClose, theme, language }) {
         data-testid="autopost-preview-modal"
       >
         <div className="flex items-center justify-between mb-4">
-          <h3 className="font-semibold text-slate-900">Preview Caption</h3>
+          <h3 className="font-semibold text-slate-900">Caption Terakhir</h3>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
             <XCircle size={22} />
           </button>
         </div>
+        <div className="mb-3 text-xs text-slate-500">
+          Jadwal: <strong>{schedule.theme}</strong> — @{schedule.account_username}
+        </div>
         {loading ? (
           <div className="flex items-center justify-center py-12 gap-2 text-slate-500">
             <CircleNotch size={20} className="animate-spin" />
-            <span className="text-sm">Generating caption dengan AI...</span>
+            <span className="text-sm">Memuat...</span>
           </div>
-        ) : preview ? (
+        ) : lastPost ? (
           <div className="space-y-3">
-            <div className="bg-slate-50 rounded-md p-4 text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">
-              {preview.caption}
+            <div className="text-xs text-slate-400">
+              {lastPost.created_at ? new Date(lastPost.created_at).toLocaleString("id-ID") : ""}
+              {" — "}
+              <Badge variant={lastPost.status === "success" ? "default" : "destructive"} className={`text-xs ${lastPost.status === "success" ? "bg-green-50 text-green-700 border-green-200" : ""}`}>
+                {lastPost.status === "success" ? "Berhasil" : "Gagal"}
+              </Badge>
             </div>
-            {preview.hashtags && (
-              <div className="bg-blue-50 rounded-md p-3 text-sm text-blue-700 font-medium">
-                {preview.hashtags}
-              </div>
+            <div className="bg-slate-50 rounded-md p-4 text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">
+              {lastPost.caption || "Tidak ada caption"}
+            </div>
+            {lastPost.image && (
+              <a href={`${API}/screenshots/${lastPost.image}`} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                <ImageIcon size={14} /> Lihat Gambar
+              </a>
             )}
           </div>
         ) : (
-          <p className="text-sm text-slate-500 py-8 text-center">Tidak ada data preview</p>
+          <p className="text-sm text-slate-500 py-8 text-center">Belum ada posting untuk jadwal ini</p>
         )}
+      </div>
+    </div>
+  );
+}
+
+function EditModal({ open, onClose, schedule, languages, onSaved }) {
+  const [theme, setTheme] = useState("");
+  const [language, setLanguage] = useState("id");
+  const [scheduleTime, setScheduleTime] = useState("13:00");
+  const [imageSource, setImageSource] = useState("mixed");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (open && schedule) {
+      setTheme(schedule.theme || "");
+      setLanguage(schedule.language || "id");
+      setScheduleTime(schedule.schedule_time || "13:00");
+      setImageSource(schedule.image_source || "mixed");
+    }
+  }, [open, schedule]);
+
+  const handleSave = async () => {
+    if (!theme.trim()) {
+      toast.error("Tema tidak boleh kosong");
+      return;
+    }
+    setSaving(true);
+    try {
+      await axios.patch(`${API}/auto-post/schedules/${schedule.id}`, {
+        theme: theme.trim(),
+        language,
+        schedule_time: scheduleTime,
+        image_source: imageSource,
+      });
+      toast.success("Jadwal berhasil diperbarui");
+      onSaved();
+      onClose();
+    } catch {
+      toast.error("Gagal menyimpan perubahan");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open || !schedule) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-white rounded-lg shadow-xl max-w-md w-full p-6"
+        onClick={(e) => e.stopPropagation()}
+        data-testid="autopost-edit-modal"
+      >
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="font-semibold text-slate-900">Edit Jadwal</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+            <XCircle size={22} />
+          </button>
+        </div>
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label className="text-xs font-medium text-slate-600">Akun</Label>
+            <Input value={`@${schedule.account_username}`} disabled className="h-9 text-sm bg-slate-50" />
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs font-medium text-slate-600">Tema / Topik Konten</Label>
+            <Input
+              data-testid="edit-theme-input"
+              value={theme}
+              onChange={(e) => setTheme(e.target.value)}
+              className="h-9 text-sm"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium text-slate-600">Bahasa</Label>
+              <Select value={language} onValueChange={setLanguage}>
+                <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {languages.map((l) => (
+                    <SelectItem key={l.id} value={l.id}>{l.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium text-slate-600">Jam Posting (WIB)</Label>
+              <Input
+                data-testid="edit-time-input"
+                type="time"
+                value={scheduleTime}
+                onChange={(e) => setScheduleTime(e.target.value)}
+                className="h-9 text-sm"
+              />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs font-medium text-slate-600">Sumber Gambar</Label>
+            <Select value={imageSource} onValueChange={setImageSource}>
+              <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="mixed">Campuran (AI + Web)</SelectItem>
+                <SelectItem value="web">Web (Unsplash/Pexels)</SelectItem>
+                <SelectItem value="ai">AI Generated</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={onClose} className="text-sm">Batal</Button>
+            <Button
+              data-testid="edit-save-btn"
+              size="sm"
+              disabled={saving || !theme.trim()}
+              onClick={handleSave}
+              className="bg-blue-600 hover:bg-blue-700 text-white text-sm gap-1.5"
+            >
+              {saving ? <CircleNotch size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+              {saving ? "Menyimpan..." : "Simpan"}
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -292,8 +426,9 @@ export default function AutoPost() {
   const [loading, setLoading] = useState(true);
   const [postingIds, setPostingIds] = useState(new Set());
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewTheme, setPreviewTheme] = useState("");
-  const [previewLang, setPreviewLang] = useState("id");
+  const [previewSchedule, setPreviewSchedule] = useState(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editSchedule, setEditSchedule] = useState(null);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -356,12 +491,6 @@ export default function AutoPost() {
         return next;
       });
     }
-  };
-
-  const openPreview = (theme, lang) => {
-    setPreviewTheme(theme);
-    setPreviewLang(lang);
-    setPreviewOpen(true);
   };
 
   if (loading) {
@@ -479,12 +608,22 @@ export default function AutoPost() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => openPreview(s.theme, s.language)}
+                          onClick={() => { setPreviewSchedule(s); setPreviewOpen(true); }}
                           className="h-7 w-7 p-0 text-slate-500 hover:text-blue-600"
-                          title="Preview caption"
+                          title="Lihat caption terakhir"
                           data-testid={`schedule-preview-${s.id}`}
                         >
                           <Eye size={15} />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => { setEditSchedule(s); setEditOpen(true); }}
+                          className="h-7 w-7 p-0 text-slate-500 hover:text-amber-600"
+                          title="Edit jadwal"
+                          data-testid={`schedule-edit-${s.id}`}
+                        >
+                          <PencilSimple size={15} />
                         </Button>
                         <Button
                           variant="ghost"
@@ -528,8 +667,14 @@ export default function AutoPost() {
       <PreviewModal
         open={previewOpen}
         onClose={() => setPreviewOpen(false)}
-        theme={previewTheme}
-        language={previewLang}
+        schedule={previewSchedule}
+      />
+      <EditModal
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        schedule={editSchedule}
+        languages={languages}
+        onSaved={fetchAll}
       />
     </div>
   );
