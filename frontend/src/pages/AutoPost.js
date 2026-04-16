@@ -112,7 +112,7 @@ function ScheduleForm({ accounts, languages, onCreated }) {
         </div>
 
         <div className="space-y-1.5">
-          <Label className="text-xs font-medium text-slate-600">Jam Posting (UTC)</Label>
+          <Label className="text-xs font-medium text-slate-600">Jam Posting (WIB)</Label>
           <Input
             data-testid="autopost-time-input"
             type="time"

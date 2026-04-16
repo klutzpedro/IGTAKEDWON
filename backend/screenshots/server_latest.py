@@ -2015,14 +2015,17 @@ async def execute_auto_post(schedule: dict) -> dict:
         return {"status": "failed", "message": str(e)[:300]}
 
 async def auto_post_scheduler_worker():
-    """Background scheduler: checks every 60s if any post is due."""
+    """Background scheduler: checks every 60s if any post is due. Uses WIB (UTC+7)."""
     global auto_post_scheduler_running
-    logger.info("Auto-post scheduler started")
+    from datetime import timedelta
+    WIB = timezone(timedelta(hours=7))
+    logger.info("Auto-post scheduler started (WIB timezone)")
     
     while auto_post_scheduler_running:
         try:
-            now = datetime.now(timezone.utc)
-            current_time = now.strftime("%H:%M")
+            now_wib = datetime.now(WIB)
+            current_time = now_wib.strftime("%H:%M")
+            today_date_wib = now_wib.strftime("%Y-%m-%d")
             
             schedules = await db.auto_post_schedules.find(
                 {"active": True}, {"_id": 0}
@@ -2036,15 +2039,18 @@ async def auto_post_scheduler_worker():
                 if sched_time != current_time:
                     continue
                 
-                # Check if already posted today
+                # Check if already posted today (WIB date)
                 last_posted = schedule.get("last_posted_at", "")
                 if last_posted:
-                    last_date = last_posted[:10]
-                    today_date = now.isoformat()[:10]
-                    if last_date == today_date:
-                        continue
+                    try:
+                        last_dt = datetime.fromisoformat(last_posted.replace("Z", "+00:00"))
+                        last_date_wib = last_dt.astimezone(WIB).strftime("%Y-%m-%d")
+                        if last_date_wib == today_date_wib:
+                            continue
+                    except:
+                        pass
                 
-                logger.info(f"AutoPost: Time to post! Schedule '{schedule['theme']}' at {sched_time}")
+                logger.info(f"AutoPost: Time to post! Schedule '{schedule['theme']}' at {sched_time} WIB")
                 await execute_auto_post(schedule)
             
             await asyncio.sleep(60)
