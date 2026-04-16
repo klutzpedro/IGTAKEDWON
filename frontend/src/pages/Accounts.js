@@ -302,6 +302,7 @@ export default function Accounts() {
               <TableHead>Status</TableHead>
               <TableHead>Proxy</TableHead>
               <TableHead>Status Proxy</TableHead>
+              <TableHead>IP Address</TableHead>
               <TableHead>Info</TableHead>
               <TableHead>Ditambahkan</TableHead>
               <TableHead className="text-right">Aksi</TableHead>
@@ -310,13 +311,13 @@ export default function Accounts() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-10">
+                <TableCell colSpan={8} className="text-center py-10">
                   <SpinnerGap size={24} className="animate-spin mx-auto text-slate-400" />
                 </TableCell>
               </TableRow>
             ) : accounts.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-10">
+                <TableCell colSpan={8} className="text-center py-10">
                   <UserCircle size={40} className="mx-auto text-slate-300 mb-2" />
                   <p className="text-sm text-slate-400">Belum ada akun. Klik "Tambah Akun" untuk memulai.</p>
                 </TableCell>
@@ -360,9 +361,9 @@ export default function Accounts() {
                                 <SpinnerGap size={12} className="animate-spin" /> Cek...
                               </span>
                             ) : proxyStatus[acc.id].status === "online" ? (
-                              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-green-50 text-green-700 border border-green-200" title={proxyStatus[acc.id].ip}>
+                              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-green-50 text-green-700 border border-green-200">
                                 <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                                Online ({proxyStatus[acc.id].ip})
+                                Online
                               </span>
                             ) : (
                               <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-red-50 text-red-600 border border-red-200" title={proxyStatus[acc.id].message}>
@@ -376,6 +377,17 @@ export default function Accounts() {
                             </Button>
                           )}
                         </div>
+                      ) : (
+                        <span className="text-xs text-slate-400">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {proxyStatus[acc.id] && proxyStatus[acc.id].ip ? (
+                        <span className="text-xs font-mono text-slate-700 bg-slate-100 px-2 py-0.5 rounded">
+                          {proxyStatus[acc.id].ip}
+                        </span>
+                      ) : acc.proxy ? (
+                        <span className="text-xs text-slate-400">—</span>
                       ) : (
                         <span className="text-xs text-slate-400">—</span>
                       )}
