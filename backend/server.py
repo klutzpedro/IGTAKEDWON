@@ -1137,6 +1137,36 @@ async def force_assign_proxy_to_all():
         await db.ig_accounts.update_one({"id": acc["id"]}, {"$set": {"proxy": proxy}})
     return {"message": f"Semua {len(accounts)} akun diupdate dengan proxy IPRoyal unik", "total": len(accounts)}
 
+@api_router.post("/proxy/check/{account_id}")
+async def check_proxy_status(account_id: str):
+    """Check if proxy for an account is working by testing IP."""
+    account = await db.ig_accounts.find_one({"id": account_id}, {"_id": 0})
+    if not account:
+        raise HTTPException(404, "Akun tidak ditemukan")
+    proxy = account.get("proxy", "")
+    if not proxy:
+        return {"status": "no_proxy", "message": "Tidak ada proxy", "ip": ""}
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(ig_executor, _sync_check_proxy, proxy)
+    return result
+
+def _sync_check_proxy(proxy_url: str) -> dict:
+    """Test proxy connectivity. Runs in thread pool."""
+    import requests as req
+    try:
+        resp = req.get("https://ipv4.icanhazip.com", proxies={"http": proxy_url, "https": proxy_url}, timeout=10)
+        if resp.status_code == 200:
+            ip = resp.text.strip()
+            return {"status": "online", "message": f"Proxy aktif (IP: {ip})", "ip": ip}
+        return {"status": "error", "message": f"HTTP {resp.status_code}", "ip": ""}
+    except req.exceptions.Timeout:
+        return {"status": "timeout", "message": "Proxy timeout", "ip": ""}
+    except req.exceptions.ProxyError:
+        return {"status": "offline", "message": "Proxy tidak bisa dihubungi", "ip": ""}
+    except Exception as e:
+        return {"status": "error", "message": str(e)[:100], "ip": ""}
+
+
 @api_router.get("/accounts")
 async def list_accounts():
     return await db.ig_accounts.find({}, {"_id": 0, "password": 0}).to_list(100)

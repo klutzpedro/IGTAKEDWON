@@ -58,6 +58,7 @@ export default function Accounts() {
   const [editProxy, setEditProxy] = useState("");
   const [showEditPassword, setShowEditPassword] = useState(false);
   const [editSubmitting, setEditSubmitting] = useState(false);
+  const [proxyStatus, setProxyStatus] = useState({});
 
   const fetchAccounts = async () => {
     try {
@@ -231,6 +232,22 @@ export default function Accounts() {
     }
   };
 
+  const checkProxy = async (accountId) => {
+    setProxyStatus((prev) => ({ ...prev, [accountId]: { status: "checking", message: "Mengecek..." } }));
+    try {
+      const { data } = await axios.post(`${API}/proxy/check/${accountId}`);
+      setProxyStatus((prev) => ({ ...prev, [accountId]: data }));
+    } catch {
+      setProxyStatus((prev) => ({ ...prev, [accountId]: { status: "error", message: "Gagal cek" } }));
+    }
+  };
+
+  const checkAllProxies = async () => {
+    for (const acc of accounts) {
+      if (acc.proxy) checkProxy(acc.id);
+    }
+  };
+
   return (
     <div data-testid="accounts-page" className="space-y-6">
       <div className="flex items-center justify-between">
@@ -242,14 +259,25 @@ export default function Accounts() {
             Kelola akun Instagram yang digunakan untuk pelaporan
           </p>
         </div>
-        <Button
-          data-testid="add-account-btn"
-          onClick={() => setShowAddDialog(true)}
-          className="gap-2 bg-blue-600 hover:bg-blue-700"
-        >
-          <Plus size={16} weight="bold" />
-          Tambah Akun
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            data-testid="check-all-proxy-btn"
+            variant="outline"
+            onClick={checkAllProxies}
+            className="gap-2 text-sm"
+          >
+            <Globe size={16} weight="duotone" />
+            Cek Semua Proxy
+          </Button>
+          <Button
+            data-testid="add-account-btn"
+            onClick={() => setShowAddDialog(true)}
+            className="gap-2 bg-blue-600 hover:bg-blue-700"
+          >
+            <Plus size={16} weight="bold" />
+            Tambah Akun
+          </Button>
+        </div>
       </div>
 
       {/* Info box about proxy */}
@@ -273,6 +301,7 @@ export default function Accounts() {
               <TableHead>Username</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Proxy</TableHead>
+              <TableHead>Status Proxy</TableHead>
               <TableHead>Info</TableHead>
               <TableHead>Ditambahkan</TableHead>
               <TableHead className="text-right">Aksi</TableHead>
@@ -281,13 +310,13 @@ export default function Accounts() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center py-10">
+                <TableCell colSpan={7} className="text-center py-10">
                   <SpinnerGap size={24} className="animate-spin mx-auto text-slate-400" />
                 </TableCell>
               </TableRow>
             ) : accounts.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center py-10">
+                <TableCell colSpan={7} className="text-center py-10">
                   <UserCircle size={40} className="mx-auto text-slate-300 mb-2" />
                   <p className="text-sm text-slate-400">Belum ada akun. Klik "Tambah Akun" untuk memulai.</p>
                 </TableCell>
@@ -317,6 +346,35 @@ export default function Accounts() {
                         <div className="flex items-center gap-1 text-xs text-slate-500">
                           <Globe size={12} />
                           <span className="max-w-[100px] truncate">{acc.proxy}</span>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-400">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {acc.proxy ? (
+                        <div className="flex items-center gap-1.5">
+                          {proxyStatus[acc.id] ? (
+                            proxyStatus[acc.id].status === "checking" ? (
+                              <span className="inline-flex items-center gap-1 text-xs text-blue-600">
+                                <SpinnerGap size={12} className="animate-spin" /> Cek...
+                              </span>
+                            ) : proxyStatus[acc.id].status === "online" ? (
+                              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-green-50 text-green-700 border border-green-200" title={proxyStatus[acc.id].ip}>
+                                <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                                Online ({proxyStatus[acc.id].ip})
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-red-50 text-red-600 border border-red-200" title={proxyStatus[acc.id].message}>
+                                <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                                {proxyStatus[acc.id].status === "timeout" ? "Timeout" : proxyStatus[acc.id].status === "offline" ? "Offline" : "Error"}
+                              </span>
+                            )
+                          ) : (
+                            <Button variant="ghost" size="sm" onClick={() => checkProxy(acc.id)} className="h-6 text-xs text-slate-500 hover:text-blue-600 px-2" data-testid={`check-proxy-${acc.username}`}>
+                              Cek Proxy
+                            </Button>
+                          )}
                         </div>
                       ) : (
                         <span className="text-xs text-slate-400">—</span>
