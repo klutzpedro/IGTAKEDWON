@@ -30,6 +30,28 @@ logger = logging.getLogger(__name__)
 # Thread pool for blocking instagrapi calls
 ig_executor = ThreadPoolExecutor(max_workers=4)
 
+# --- IPRoyal Rotating Proxy ---
+def get_proxy_for_account(account_id: str) -> str:
+    """Generate a unique proxy URL per account using IPRoyal session parameter.
+    Each account gets a different IP via session-based sticky routing."""
+    base_proxy = os.environ.get("IPROYAL_PROXY_BASE", "")
+    if not base_proxy:
+        return ""
+    # Add unique session ID per account so each account gets a different IP
+    # IPRoyal format: user:pass_session-XXXX@host:port
+    # Insert session param before @ sign
+    if "@" in base_proxy:
+        creds_part, host_part = base_proxy.rsplit("@", 1)
+        # Use short hash of account_id as session
+        session_id = account_id.replace("-", "")[:12]
+        # Check if already has session param
+        if "_session-" not in creds_part:
+            proxy_url = f"{creds_part}_session-{session_id}@{host_part}"
+        else:
+            proxy_url = base_proxy
+        return proxy_url
+    return base_proxy
+
 # --- Models ---
 class IGAccountCreate(BaseModel):
     username: str
@@ -1056,15 +1078,64 @@ async def create_account(data: IGAccountCreate):
     existing = await db.ig_accounts.find_one({"username": data.username}, {"_id": 0})
     if existing:
         raise HTTPException(400, "Akun sudah ada")
+    account_id = str(uuid.uuid4())
+    # Auto-assign proxy from IPRoyal if no proxy provided
+    proxy = data.proxy.strip() if data.proxy else ""
+    if not proxy:
+        proxy = get_proxy_for_account(account_id)
     doc = {
-        "id": str(uuid.uuid4()), "username": data.username, "password": data.password,
-        "proxy": data.proxy, "is_logged_in": False, "login_status": "idle",
+        "id": account_id, "username": data.username, "password": data.password,
+        "proxy": proxy, "is_logged_in": False, "login_status": "idle",
         "login_error": None, "challenge_method": None,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.ig_accounts.insert_one(doc)
     return {"id": doc["id"], "username": doc["username"], "is_logged_in": False,
             "login_status": "idle", "proxy": doc["proxy"], "created_at": doc["created_at"]}
+
+
+@api_router.get("/proxy/config")
+async def get_proxy_config():
+    """Get current global proxy configuration."""
+    base = os.environ.get("IPROYAL_PROXY_BASE", "")
+    # Mask password for display
+    masked = base
+    if base and "@" in base and ":" in base:
+        try:
+            proto_creds, host = base.rsplit("@", 1)
+            proto, creds = proto_creds.split("://", 1)
+            user, passw = creds.split(":", 1)
+            masked = f"{proto}://{user}:****@{host}"
+        except:
+            pass
+    return {"proxy_base": masked, "configured": bool(base)}
+
+@api_router.post("/proxy/assign-all")
+async def assign_proxy_to_all_accounts():
+    """Auto-assign unique proxy to all accounts that don't have one."""
+    base = os.environ.get("IPROYAL_PROXY_BASE", "")
+    if not base:
+        raise HTTPException(400, "IPROYAL_PROXY_BASE belum dikonfigurasi di .env")
+    accounts = await db.ig_accounts.find({}, {"_id": 0}).to_list(200)
+    updated = 0
+    for acc in accounts:
+        if not acc.get("proxy") or acc.get("proxy", "").strip() == "":
+            proxy = get_proxy_for_account(acc["id"])
+            await db.ig_accounts.update_one({"id": acc["id"]}, {"$set": {"proxy": proxy}})
+            updated += 1
+    return {"message": f"{updated} akun diupdate dengan proxy IPRoyal", "total_accounts": len(accounts), "updated": updated}
+
+@api_router.post("/proxy/force-assign-all")
+async def force_assign_proxy_to_all():
+    """Force-assign unique proxy to ALL accounts (overwrite existing)."""
+    base = os.environ.get("IPROYAL_PROXY_BASE", "")
+    if not base:
+        raise HTTPException(400, "IPROYAL_PROXY_BASE belum dikonfigurasi di .env")
+    accounts = await db.ig_accounts.find({}, {"_id": 0}).to_list(200)
+    for acc in accounts:
+        proxy = get_proxy_for_account(acc["id"])
+        await db.ig_accounts.update_one({"id": acc["id"]}, {"$set": {"proxy": proxy}})
+    return {"message": f"Semua {len(accounts)} akun diupdate dengan proxy IPRoyal unik", "total": len(accounts)}
 
 @api_router.get("/accounts")
 async def list_accounts():
