@@ -777,20 +777,30 @@ async def perform_report(target: dict, account: dict) -> dict:
     # Get session cookies directly from DB (survives server restart)
     session_doc = await db.ig_sessions.find_one({"account_id": account["id"]}, {"_id": 0})
     
-    if not session_doc or not session_doc.get("settings"):
-        # Try fresh login to get new session
-        logger.info(f"Report: No session for @{account['username']}, attempting fresh login...")
-        login_result = await _refresh_session(account)
-        if not login_result:
-            return {"status": "failed", "message": "Session tidak tersedia. Login ulang diperlukan."}
+    browser_cookies = None
+    
+    if session_doc and session_doc.get("settings"):
+        browser_cookies = _extract_browser_cookies(session_doc["settings"])
+    
+    # If no session or no sessionid, try fresh login
+    if not browser_cookies or not browser_cookies.get("sessionid"):
+        logger.info(f"Report: No valid session for @{account['username']}, attempting fresh login...")
+        if not account.get("password"):
+            # Re-fetch account with password
+            full_account = await db.ig_accounts.find_one({"id": account["id"]}, {"_id": 0})
+            if full_account:
+                account = full_account
+        
+        login_ok = await _refresh_session(account)
+        if not login_ok:
+            return {"status": "failed", "message": f"Auto re-login gagal untuk @{account['username']}. Coba login manual."}
+        
         session_doc = await db.ig_sessions.find_one({"account_id": account["id"]}, {"_id": 0})
-        if not session_doc or not session_doc.get("settings"):
-            return {"status": "failed", "message": "Session tidak tersedia setelah re-login."}
-    
-    browser_cookies = _extract_browser_cookies(session_doc["settings"])
-    
-    if not browser_cookies.get("sessionid"):
-        return {"status": "failed", "message": "Session cookies tidak ada. Login ulang diperlukan."}
+        if session_doc and session_doc.get("settings"):
+            browser_cookies = _extract_browser_cookies(session_doc["settings"])
+        
+        if not browser_cookies or not browser_cookies.get("sessionid"):
+            return {"status": "failed", "message": f"Session cookies kosong setelah re-login @{account['username']}."}
 
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
@@ -798,58 +808,109 @@ async def perform_report(target: dict, account: dict) -> dict:
         _sync_report, browser_cookies, target["url"], target.get("category", "spam")
     )
 
-    # If session expired (login redirect), try fresh login and retry once
-    if result.get("status") == "failed" and "login" in result.get("message", "").lower():
-        logger.info(f"Report: Session expired for @{account['username']}, refreshing session...")
+    # If session expired (login redirect detected by browser), try fresh login and retry once
+    if result.get("status") == "failed" and ("login" in result.get("message", "").lower() or "session expired" in result.get("message", "").lower()):
+        logger.info(f"Report: Session expired for @{account['username']}, refreshing...")
+        if not account.get("password"):
+            full_account = await db.ig_accounts.find_one({"id": account["id"]}, {"_id": 0})
+            if full_account:
+                account = full_account
+        
         login_ok = await _refresh_session(account)
         if login_ok:
             session_doc = await db.ig_sessions.find_one({"account_id": account["id"]}, {"_id": 0})
             if session_doc and session_doc.get("settings"):
                 browser_cookies = _extract_browser_cookies(session_doc["settings"])
-                result = await loop.run_in_executor(
-                    ig_executor,
-                    _sync_report, browser_cookies, target["url"], target.get("category", "spam")
-                )
+                if browser_cookies.get("sessionid"):
+                    result = await loop.run_in_executor(
+                        ig_executor,
+                        _sync_report, browser_cookies, target["url"], target.get("category", "spam")
+                    )
 
     return result
 
 
 def _extract_browser_cookies(settings: dict) -> dict:
-    """Extract browser cookies from instagrapi settings."""
+    """Extract browser cookies from instagrapi settings. Handles multiple storage formats."""
     auth_data = settings.get("authorization_data", {})
     cookies = settings.get("cookies", {})
-    return {
-        "sessionid": auth_data.get("sessionid", "") or cookies.get("sessionid", ""),
-        "ds_user_id": str(auth_data.get("ds_user_id", "") or cookies.get("ds_user_id", "")),
-        "csrftoken": cookies.get("csrftoken", ""),
-        "mid": settings.get("mid", ""),
-        "ig_did": settings.get("ig_did", ""),
-        "rur": cookies.get("rur", ""),
+    
+    # Try multiple locations for sessionid
+    session_id = (
+        auth_data.get("sessionid", "")
+        or cookies.get("sessionid", "")
+        or settings.get("sessionid", "")
+    )
+    
+    ds_user_id = str(
+        auth_data.get("ds_user_id", "")
+        or cookies.get("ds_user_id", "")
+        or settings.get("ds_user_id", "")
+        or ""
+    )
+    
+    csrftoken = (
+        cookies.get("csrftoken", "")
+        or auth_data.get("csrftoken", "")
+        or settings.get("csrftoken", "")
+    )
+    
+    result = {
+        "sessionid": session_id,
+        "ds_user_id": ds_user_id,
+        "csrftoken": csrftoken,
+        "mid": settings.get("mid", "") or cookies.get("mid", ""),
+        "ig_did": settings.get("ig_did", "") or cookies.get("ig_did", ""),
+        "rur": cookies.get("rur", "") or settings.get("rur", ""),
     }
+    
+    if not session_id:
+        logger.warning(f"_extract_browser_cookies: sessionid not found! Keys in settings: {list(settings.keys())}, auth_data keys: {list(auth_data.keys())}, cookies keys: {list(cookies.keys())}")
+    
+    return result
 
 
 async def _refresh_session(account: dict) -> bool:
     """Fresh login via instagrapi to refresh session cookies. Returns True on success."""
+    username = account.get("username", "")
+    password = account.get("password", "")
+    proxy = account.get("proxy", "")
+    
+    if not password:
+        logger.error(f"Session refresh: No password for @{username}")
+        return False
+    
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             ig_executor,
-            _sync_fresh_login, account["username"], account.get("password", ""), account.get("proxy", "")
+            _sync_fresh_login, username, password, proxy
         )
         if result.get("status") == "ok":
             settings = result["settings"]
+            
+            # Verify sessionid exists in the new settings
+            test_cookies = _extract_browser_cookies(settings)
+            if not test_cookies.get("sessionid"):
+                logger.warning(f"Session refresh: Login OK but no sessionid in settings for @{username}")
+                # Try to find it in the raw settings
+                logger.warning(f"Settings keys: {list(settings.keys())}")
+            
             await db.ig_sessions.update_one(
                 {"account_id": account["id"]},
                 {"$set": {"account_id": account["id"], "settings": settings}}, upsert=True)
             await db.ig_accounts.update_one({"id": account["id"]},
                 {"$set": {"is_logged_in": True, "login_status": "logged_in", "login_error": None}})
-            logger.info(f"Session refreshed for @{account['username']}")
+            logger.info(f"Session refreshed for @{username} (sessionid={'yes' if test_cookies.get('sessionid') else 'NO'})")
             return True
         else:
-            logger.warning(f"Session refresh failed for @{account['username']}: {result.get('message','')}")
+            error_msg = result.get('message', 'Unknown error')
+            logger.warning(f"Session refresh failed for @{username}: {error_msg}")
+            await db.ig_accounts.update_one({"id": account["id"]},
+                {"$set": {"login_error": error_msg[:200]}})
             return False
     except Exception as e:
-        logger.error(f"Session refresh error for @{account['username']}: {e}")
+        logger.error(f"Session refresh error for @{username}: {e}")
         return False
 
 
