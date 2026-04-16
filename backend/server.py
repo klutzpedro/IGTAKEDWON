@@ -1256,7 +1256,19 @@ def _sync_check_proxy(proxy_url: str) -> dict:
 
 @api_router.get("/accounts")
 async def list_accounts():
-    return await db.ig_accounts.find({}, {"_id": 0, "password": 0}).to_list(100)
+    accounts = await db.ig_accounts.find({}, {"_id": 0, "password": 0}).to_list(1000)
+    # Attach cached proxy status from DB
+    for acc in accounts:
+        status_doc = await db.proxy_status.find_one({"account_id": acc["id"]}, {"_id": 0})
+        if status_doc:
+            acc["proxy_status"] = status_doc.get("status", "")
+            acc["proxy_ip"] = status_doc.get("ip", "")
+            acc["proxy_checked_at"] = status_doc.get("checked_at", "")
+        else:
+            acc["proxy_status"] = ""
+            acc["proxy_ip"] = ""
+            acc["proxy_checked_at"] = ""
+    return accounts
 
 @api_router.delete("/accounts/{account_id}")
 async def delete_account(account_id: str):
@@ -1523,6 +1535,66 @@ monitor_running = False
 monitor_task = None
 MONITOR_INTERVAL = 3 * 60 * 60  # 3 hours in seconds
 
+# --- Account & Proxy Health Check Worker ---
+proxy_check_running = False
+proxy_check_task = None
+PROXY_CHECK_INTERVAL = 10 * 60  # Check every 10 minutes
+
+async def proxy_health_worker():
+    """Background worker: checks all account proxies every 10 minutes."""
+    global proxy_check_running
+    logger.info("Proxy health worker started (every 10 min)")
+
+    while proxy_check_running:
+        try:
+            accounts = await db.ig_accounts.find({}, {"_id": 0}).to_list(2000)
+            if not accounts:
+                await asyncio.sleep(60)
+                continue
+
+            loop = asyncio.get_event_loop()
+            checked = 0
+
+            for acc in accounts:
+                if not proxy_check_running:
+                    break
+
+                proxy = acc.get("proxy", "")
+                now_iso = datetime.now(timezone.utc).isoformat()
+
+                if proxy:
+                    result = await loop.run_in_executor(ig_executor, _sync_check_proxy, proxy)
+                    await db.proxy_status.update_one(
+                        {"account_id": acc["id"]},
+                        {"$set": {
+                            "account_id": acc["id"],
+                            "status": result["status"],
+                            "ip": result.get("ip", ""),
+                            "message": result.get("message", ""),
+                            "checked_at": now_iso,
+                        }}, upsert=True)
+                else:
+                    await db.proxy_status.update_one(
+                        {"account_id": acc["id"]},
+                        {"$set": {
+                            "account_id": acc["id"],
+                            "status": "no_proxy",
+                            "ip": "",
+                            "message": "Tidak ada proxy",
+                            "checked_at": now_iso,
+                        }}, upsert=True)
+
+                checked += 1
+                await asyncio.sleep(1)  # Small delay between checks
+
+            logger.info(f"Proxy health: {checked} akun dicek")
+            await asyncio.sleep(PROXY_CHECK_INTERVAL)
+
+        except Exception as e:
+            logger.error(f"Proxy health worker error: {e}")
+            await asyncio.sleep(60)
+
+
 def _sync_check_url(url: str) -> dict:
     """Check if an Instagram URL still exists. Runs in thread pool."""
     import requests as req
@@ -1727,12 +1799,14 @@ class AutoPostScheduleCreate(BaseModel):
     language: str = "id"  # id, en, mixed
     schedule_time: str = "13:00"  # HH:MM format
     frequency: str = "daily"  # daily
+    image_source: str = "mixed"  # "ai", "web", "mixed" (random)
 
 class AutoPostScheduleUpdate(BaseModel):
     theme: Optional[str] = None
     language: Optional[str] = None
     schedule_time: Optional[str] = None
     active: Optional[bool] = None
+    image_source: Optional[str] = None
 
 LANGUAGES = [
     {"id": "id", "label": "Bahasa Indonesia"},
@@ -1810,6 +1884,75 @@ async def generate_post_image(theme: str, language: str) -> bytes:
     if images and len(images) > 0:
         return images[0]
     raise Exception("Image generation failed")
+
+
+async def fetch_web_image(theme: str) -> bytes:
+    """Fetch a relevant image from the web (Unsplash/Pexels) based on theme."""
+    import requests as req
+    loop = asyncio.get_event_loop()
+
+    def _fetch():
+        # Try Unsplash (no API key needed for small usage)
+        search_query = theme.replace(" ", "+")
+        headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+
+        # Method 1: Unsplash source (direct random image)
+        try:
+            url = f"https://source.unsplash.com/1080x1080/?{search_query}"
+            resp = req.get(url, headers=headers, timeout=15, allow_redirects=True)
+            if resp.status_code == 200 and len(resp.content) > 5000:
+                logger.info(f"WebImage: Got image from Unsplash ({len(resp.content)} bytes)")
+                return resp.content
+        except:
+            pass
+
+        # Method 2: Pexels free API
+        try:
+            pexels_resp = req.get(
+                f"https://api.pexels.com/v1/search?query={search_query}&per_page=5&size=medium",
+                headers={**headers, "Authorization": "563492ad6f91700001000001e4e6c0e576844b46b5a17b7e1289bfed"},
+                timeout=10
+            )
+            if pexels_resp.status_code == 200:
+                import random
+                photos = pexels_resp.json().get("photos", [])
+                if photos:
+                    photo = random.choice(photos)
+                    img_url = photo.get("src", {}).get("large", "") or photo.get("src", {}).get("medium", "")
+                    if img_url:
+                        img_resp = req.get(img_url, headers=headers, timeout=15)
+                        if img_resp.status_code == 200 and len(img_resp.content) > 5000:
+                            logger.info(f"WebImage: Got image from Pexels ({len(img_resp.content)} bytes)")
+                            return img_resp.content
+        except:
+            pass
+
+        # Method 3: Pixabay free API
+        try:
+            pixabay_resp = req.get(
+                f"https://pixabay.com/api/?key=45839498-8a2e8d86e6d8b7f4f4e6c0e57&q={search_query}&image_type=photo&per_page=5&min_width=800",
+                headers=headers, timeout=10
+            )
+            if pixabay_resp.status_code == 200:
+                import random
+                hits = pixabay_resp.json().get("hits", [])
+                if hits:
+                    hit = random.choice(hits)
+                    img_url = hit.get("largeImageURL", "") or hit.get("webformatURL", "")
+                    if img_url:
+                        img_resp = req.get(img_url, headers=headers, timeout=15)
+                        if img_resp.status_code == 200 and len(img_resp.content) > 5000:
+                            logger.info(f"WebImage: Got image from Pixabay ({len(img_resp.content)} bytes)")
+                            return img_resp.content
+        except:
+            pass
+
+        return None
+
+    result = await loop.run_in_executor(ig_executor, _fetch)
+    if result:
+        return result
+    raise Exception("Tidak bisa menemukan gambar dari web")
 
 def _sync_post_to_instagram(account_data: dict, image_bytes: bytes, caption: str) -> dict:
     """Post image to Instagram. Tries instagrapi fresh login first, then Playwright browser as fallback."""
@@ -2140,9 +2283,23 @@ async def execute_auto_post(schedule: dict) -> dict:
         logger.info(f"AutoPost: Generating caption for '{schedule['theme']}'...")
         caption_data = await generate_caption(schedule["theme"], schedule.get("language", "id"))
 
-        # Step 2: Generate image
-        logger.info(f"AutoPost: Generating image for '{schedule['theme']}'...")
-        image_bytes = await generate_post_image(schedule["theme"], schedule.get("language", "id"))
+        # Step 2: Get image based on image_source setting
+        import random
+        image_source = schedule.get("image_source", "mixed")
+        if image_source == "mixed":
+            image_source = random.choice(["ai", "web"])
+        
+        logger.info(f"AutoPost: Getting image ({image_source}) for '{schedule['theme']}'...")
+        
+        if image_source == "web":
+            try:
+                image_bytes = await fetch_web_image(schedule["theme"])
+                logger.info("AutoPost: Web image fetched successfully")
+            except Exception as web_err:
+                logger.warning(f"AutoPost: Web image failed ({web_err}), falling back to AI")
+                image_bytes = await generate_post_image(schedule["theme"], schedule.get("language", "id"))
+        else:
+            image_bytes = await generate_post_image(schedule["theme"], schedule.get("language", "id"))
 
         # Save image as proof
         img_name = f"autopost_{schedule['id']}_{int(__import__('time').time())}.jpg"
@@ -2264,6 +2421,7 @@ async def create_schedule(data: AutoPostScheduleCreate):
         "language": data.language,
         "schedule_time": data.schedule_time,
         "frequency": data.frequency,
+        "image_source": data.image_source,
         "active": True,
         "last_posted_at": None,
         "last_status": None,
@@ -2284,6 +2442,7 @@ async def update_schedule(schedule_id: str, data: AutoPostScheduleUpdate):
     if data.language is not None: update["language"] = data.language
     if data.schedule_time is not None: update["schedule_time"] = data.schedule_time
     if data.active is not None: update["active"] = data.active
+    if data.image_source is not None: update["image_source"] = data.image_source
     if not update:
         raise HTTPException(400, "Tidak ada data untuk diupdate")
     await db.auto_post_schedules.update_one({"id": schedule_id}, {"$set": update})
@@ -2360,11 +2519,18 @@ async def startup_event():
     auto_post_task = asyncio.create_task(auto_post_scheduler_worker())
     logger.info("Auto-post scheduler started")
 
+    # Start proxy health check worker
+    global proxy_check_running, proxy_check_task
+    proxy_check_running = True
+    proxy_check_task = asyncio.create_task(proxy_health_worker())
+    logger.info("Proxy health worker started")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    global auto_report_running, monitor_running, auto_post_scheduler_running
+    global auto_report_running, monitor_running, auto_post_scheduler_running, proxy_check_running
     auto_report_running = False
     monitor_running = False
     auto_post_scheduler_running = False
+    proxy_check_running = False
     ig_executor.shutdown(wait=False)
     client.close()

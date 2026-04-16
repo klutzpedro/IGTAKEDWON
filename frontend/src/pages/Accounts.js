@@ -355,26 +355,20 @@ export default function Accounts() {
                     <TableCell>
                       {acc.proxy ? (
                         <div className="flex items-center gap-1.5">
-                          {proxyStatus[acc.id] ? (
-                            proxyStatus[acc.id].status === "checking" ? (
-                              <span className="inline-flex items-center gap-1 text-xs text-blue-600">
-                                <SpinnerGap size={12} className="animate-spin" /> Cek...
-                              </span>
-                            ) : proxyStatus[acc.id].status === "online" ? (
-                              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-green-50 text-green-700 border border-green-200">
-                                <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                                Online
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-red-50 text-red-600 border border-red-200" title={proxyStatus[acc.id].message}>
-                                <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                                {proxyStatus[acc.id].status === "timeout" ? "Timeout" : proxyStatus[acc.id].status === "offline" ? "Offline" : "Error"}
-                              </span>
-                            )
+                          {acc.proxy_status === "online" ? (
+                            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-green-50 text-green-700 border border-green-200">
+                              <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                              Online
+                            </span>
+                          ) : acc.proxy_status === "checking" || !acc.proxy_status ? (
+                            <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                              <SpinnerGap size={12} className="animate-spin" /> Menunggu cek...
+                            </span>
                           ) : (
-                            <Button variant="ghost" size="sm" onClick={() => checkProxy(acc.id)} className="h-6 text-xs text-slate-500 hover:text-blue-600 px-2" data-testid={`check-proxy-${acc.username}`}>
-                              Cek Proxy
-                            </Button>
+                            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-red-50 text-red-600 border border-red-200">
+                              <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                              {acc.proxy_status === "timeout" ? "Timeout" : acc.proxy_status === "offline" ? "Offline" : "Error"}
+                            </span>
                           )}
                         </div>
                       ) : (
@@ -382,12 +376,10 @@ export default function Accounts() {
                       )}
                     </TableCell>
                     <TableCell>
-                      {proxyStatus[acc.id] && proxyStatus[acc.id].ip ? (
+                      {acc.proxy_ip ? (
                         <span className="text-xs font-mono text-slate-700 bg-slate-100 px-2 py-0.5 rounded">
-                          {proxyStatus[acc.id].ip}
+                          {acc.proxy_ip}
                         </span>
-                      ) : acc.proxy ? (
-                        <span className="text-xs text-slate-400">—</span>
                       ) : (
                         <span className="text-xs text-slate-400">—</span>
                       )}

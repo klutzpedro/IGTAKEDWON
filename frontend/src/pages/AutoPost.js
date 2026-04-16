@@ -35,6 +35,7 @@ function ScheduleForm({ accounts, languages, onCreated }) {
   const [theme, setTheme] = useState("");
   const [language, setLanguage] = useState("id");
   const [scheduleTime, setScheduleTime] = useState("13:00");
+  const [imageSource, setImageSource] = useState("mixed");
   const [creating, setCreating] = useState(false);
 
   const handleSubmit = async (e) => {
@@ -51,6 +52,7 @@ function ScheduleForm({ accounts, languages, onCreated }) {
         language,
         schedule_time: scheduleTime,
         frequency: "daily",
+        image_source: imageSource,
       });
       toast.success("Jadwal auto-post berhasil dibuat!");
       setTheme("");
@@ -120,6 +122,20 @@ function ScheduleForm({ accounts, languages, onCreated }) {
             onChange={(e) => setScheduleTime(e.target.value)}
             className="h-9 text-sm"
           />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label className="text-xs font-medium text-slate-600">Sumber Gambar</Label>
+          <Select value={imageSource} onValueChange={setImageSource}>
+            <SelectTrigger data-testid="autopost-image-source" className="h-9 text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="mixed">Campuran (AI + Web)</SelectItem>
+              <SelectItem value="web">Web (Unsplash/Pexels)</SelectItem>
+              <SelectItem value="ai">AI Generated</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         <div className="flex items-end">
@@ -408,6 +424,7 @@ export default function AutoPost() {
                 <TableHead className="text-xs font-semibold text-slate-500">Tema</TableHead>
                 <TableHead className="text-xs font-semibold text-slate-500">Bahasa</TableHead>
                 <TableHead className="text-xs font-semibold text-slate-500">Jam</TableHead>
+                <TableHead className="text-xs font-semibold text-slate-500">Gambar</TableHead>
                 <TableHead className="text-xs font-semibold text-slate-500">Status</TableHead>
                 <TableHead className="text-xs font-semibold text-slate-500">Terakhir</TableHead>
                 <TableHead className="text-xs font-semibold text-slate-500 text-right">Aksi</TableHead>
@@ -429,6 +446,9 @@ export default function AutoPost() {
                     </TableCell>
                     <TableCell className="text-sm font-mono text-slate-700">
                       {s.schedule_time}
+                    </TableCell>
+                    <TableCell className="text-xs text-slate-500">
+                      {s.image_source === "ai" ? "AI" : s.image_source === "web" ? "Web" : "Campuran"}
                     </TableCell>
                     <TableCell>
                       <Badge
