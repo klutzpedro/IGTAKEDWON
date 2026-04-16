@@ -376,11 +376,28 @@ def _sync_report(cookies: dict, target_url: str, category: str) -> dict:
                 page.goto("https://www.instagram.com/", wait_until="domcontentloaded", timeout=20000)
                 time.sleep(2)
 
+                # Handle profile selection screen - click Continue
+                for cont_sel in ['div[role="button"]:has-text("Continue")', 'button:has-text("Continue")']:
+                    try:
+                        el = page.locator(cont_sel).first
+                        if el.is_visible(timeout=2000):
+                            el.click(force=True)
+                            time.sleep(3)
+                            break
+                    except:
+                        pass
+
                 # Step 2: Navigate to target
                 page.goto(clean_url, wait_until="domcontentloaded", timeout=20000)
                 time.sleep(3)
 
                 if "login" in page.url.lower():
+                    browser.close()
+                    return {"status": "failed", "message": "Session expired. Login ulang diperlukan."}
+
+                # Check if page shows "Log In" button (not logged in)
+                page_text = page.content()
+                if '"Log In"' in page_text and '"Sign Up"' in page_text and 'aria-label="More options"' not in page_text:
                     browser.close()
                     return {"status": "failed", "message": "Session expired. Login ulang diperlukan."}
 
@@ -761,35 +778,105 @@ async def perform_report(target: dict, account: dict) -> dict:
     session_doc = await db.ig_sessions.find_one({"account_id": account["id"]}, {"_id": 0})
     
     if not session_doc or not session_doc.get("settings"):
-        return {"status": "failed", "message": "Session tidak tersedia. Login ulang diperlukan."}
+        # Try fresh login to get new session
+        logger.info(f"Report: No session for @{account['username']}, attempting fresh login...")
+        login_result = await _refresh_session(account)
+        if not login_result:
+            return {"status": "failed", "message": "Session tidak tersedia. Login ulang diperlukan."}
+        session_doc = await db.ig_sessions.find_one({"account_id": account["id"]}, {"_id": 0})
+        if not session_doc or not session_doc.get("settings"):
+            return {"status": "failed", "message": "Session tidak tersedia setelah re-login."}
     
-    settings = session_doc["settings"]
-    # instagrapi stores session in authorization_data, not cookies
+    browser_cookies = _extract_browser_cookies(session_doc["settings"])
+    
+    if not browser_cookies.get("sessionid"):
+        return {"status": "failed", "message": "Session cookies tidak ada. Login ulang diperlukan."}
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        ig_executor,
+        _sync_report, browser_cookies, target["url"], target.get("category", "spam")
+    )
+
+    # If session expired (login redirect), try fresh login and retry once
+    if result.get("status") == "failed" and "login" in result.get("message", "").lower():
+        logger.info(f"Report: Session expired for @{account['username']}, refreshing session...")
+        login_ok = await _refresh_session(account)
+        if login_ok:
+            session_doc = await db.ig_sessions.find_one({"account_id": account["id"]}, {"_id": 0})
+            if session_doc and session_doc.get("settings"):
+                browser_cookies = _extract_browser_cookies(session_doc["settings"])
+                result = await loop.run_in_executor(
+                    ig_executor,
+                    _sync_report, browser_cookies, target["url"], target.get("category", "spam")
+                )
+
+    return result
+
+
+def _extract_browser_cookies(settings: dict) -> dict:
+    """Extract browser cookies from instagrapi settings."""
     auth_data = settings.get("authorization_data", {})
     cookies = settings.get("cookies", {})
-    
-    session_id = auth_data.get("sessionid", "") or cookies.get("sessionid", "")
-    ds_user_id = str(auth_data.get("ds_user_id", "") or cookies.get("ds_user_id", ""))
-    mid = settings.get("mid", "")
-    
-    if not session_id:
-        return {"status": "failed", "message": "Session cookies tidak ada. Login ulang diperlukan."}
-    
-    # Build cookies dict for browser
-    browser_cookies = {
-        "sessionid": session_id,
-        "ds_user_id": ds_user_id,
+    return {
+        "sessionid": auth_data.get("sessionid", "") or cookies.get("sessionid", ""),
+        "ds_user_id": str(auth_data.get("ds_user_id", "") or cookies.get("ds_user_id", "")),
         "csrftoken": cookies.get("csrftoken", ""),
-        "mid": mid,
+        "mid": settings.get("mid", ""),
         "ig_did": settings.get("ig_did", ""),
         "rur": cookies.get("rur", ""),
     }
 
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        ig_executor,
-        _sync_report, browser_cookies, target["url"], target.get("category", "spam")
-    )
+
+async def _refresh_session(account: dict) -> bool:
+    """Fresh login via instagrapi to refresh session cookies. Returns True on success."""
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            ig_executor,
+            _sync_fresh_login, account["username"], account.get("password", ""), account.get("proxy", "")
+        )
+        if result.get("status") == "ok":
+            settings = result["settings"]
+            await db.ig_sessions.update_one(
+                {"account_id": account["id"]},
+                {"$set": {"account_id": account["id"], "settings": settings}}, upsert=True)
+            await db.ig_accounts.update_one({"id": account["id"]},
+                {"$set": {"is_logged_in": True, "login_status": "logged_in", "login_error": None}})
+            logger.info(f"Session refreshed for @{account['username']}")
+            return True
+        else:
+            logger.warning(f"Session refresh failed for @{account['username']}: {result.get('message','')}")
+            return False
+    except Exception as e:
+        logger.error(f"Session refresh error for @{account['username']}: {e}")
+        return False
+
+
+def _sync_fresh_login(username: str, password: str, proxy: str) -> dict:
+    """Fresh instagrapi login. Runs in thread pool."""
+    try:
+        from instagrapi import Client as IGClient
+        cl = IGClient()
+        cl.delay_range = [2, 4]
+        cl.request_timeout = 30
+        cl.set_settings({
+            "user_agent": "Instagram 317.0.0.24.109 Android (33/13; 420dpi; 1080x2340; samsung; SM-G991B; o1s; exynos2100; en_US; 562830598)",
+            "device_settings": {
+                "app_version": "317.0.0.24.109",
+                "android_version": 33, "android_release": "13",
+                "dpi": "420dpi", "resolution": "1080x2340",
+                "manufacturer": "samsung", "device": "o1s",
+                "model": "SM-G991B", "cpu": "exynos2100",
+                "version_code": "562830598"
+            }
+        })
+        if proxy:
+            cl.set_proxy(proxy)
+        cl.login(username, password)
+        return {"status": "ok", "settings": cl.get_settings()}
+    except Exception as e:
+        return {"status": "failed", "message": str(e)[:300]}
 
 
 # --- Auto Report ---
