@@ -1,4 +1,5 @@
-import { NavLink } from "react-router-dom";
+import { useState } from "react";
+import { NavLink, useLocation } from "react-router-dom";
 import {
   ChartBar,
   UserCircle,
@@ -7,17 +8,18 @@ import {
   Lightning,
   InstagramLogo,
   PaperPlaneRight,
+  CaretDown,
+  Crosshair,
 } from "@phosphor-icons/react";
 
-const navItems = [
-  { to: "/", icon: ChartBar, label: "Dashboard", end: true },
-  { to: "/accounts", icon: UserCircle, label: "Akun Instagram" },
-  { to: "/reports", icon: Flag, label: "Laporan" },
-  { to: "/monitoring", icon: ListChecks, label: "Monitoring" },
-  { to: "/auto-post", icon: PaperPlaneRight, label: "Auto Post" },
-];
-
 export default function Sidebar({ autoReportRunning }) {
+  const location = useLocation();
+  const [takedownOpen, setTakedownOpen] = useState(
+    location.pathname === "/reports" || location.pathname === "/monitoring"
+  );
+
+  const isTakedownActive = location.pathname === "/reports" || location.pathname === "/monitoring";
+
   return (
     <aside
       data-testid="sidebar"
@@ -38,24 +40,108 @@ export default function Sidebar({ autoReportRunning }) {
       </div>
 
       <nav className="flex-1 py-4 px-3 space-y-1">
-        {navItems.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.end}
-            data-testid={`nav-${item.label.toLowerCase().replace(/\s+/g, '-')}`}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-all duration-200 ${
-                isActive
-                  ? "bg-blue-50 text-blue-700 border border-blue-200"
-                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900 border border-transparent"
-              }`
-            }
+        <NavLink
+          to="/"
+          end
+          data-testid="nav-dashboard"
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-all duration-200 ${
+              isActive
+                ? "bg-blue-50 text-blue-700 border border-blue-200"
+                : "text-slate-600 hover:bg-slate-50 hover:text-slate-900 border border-transparent"
+            }`
+          }
+        >
+          <ChartBar size={20} weight="duotone" />
+          Dashboard
+        </NavLink>
+
+        <NavLink
+          to="/accounts"
+          data-testid="nav-akun-instagram"
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-all duration-200 ${
+              isActive
+                ? "bg-blue-50 text-blue-700 border border-blue-200"
+                : "text-slate-600 hover:bg-slate-50 hover:text-slate-900 border border-transparent"
+            }`
+          }
+        >
+          <UserCircle size={20} weight="duotone" />
+          Akun Instagram
+        </NavLink>
+
+        {/* Takedown Dropdown */}
+        <div>
+          <button
+            data-testid="nav-takedown"
+            onClick={() => setTakedownOpen(!takedownOpen)}
+            className={`flex items-center justify-between w-full px-3 py-2.5 rounded-md text-sm font-medium transition-all duration-200 ${
+              isTakedownActive
+                ? "bg-red-50 text-red-700 border border-red-200"
+                : "text-slate-600 hover:bg-slate-50 hover:text-slate-900 border border-transparent"
+            }`}
           >
-            <item.icon size={20} weight="duotone" />
-            {item.label}
-          </NavLink>
-        ))}
+            <div className="flex items-center gap-3">
+              <Crosshair size={20} weight="duotone" />
+              Takedown
+            </div>
+            <CaretDown
+              size={14}
+              weight="bold"
+              className={`transition-transform duration-200 ${takedownOpen ? "rotate-180" : ""}`}
+            />
+          </button>
+          <div
+            className={`overflow-hidden transition-all duration-200 ${
+              takedownOpen ? "max-h-24 opacity-100 mt-0.5" : "max-h-0 opacity-0"
+            }`}
+          >
+            <NavLink
+              to="/reports"
+              data-testid="nav-laporan"
+              className={({ isActive }) =>
+                `flex items-center gap-3 pl-10 pr-3 py-2 rounded-md text-sm transition-all duration-200 ${
+                  isActive
+                    ? "bg-red-50/60 text-red-700 font-medium"
+                    : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                }`
+              }
+            >
+              <Flag size={16} weight="duotone" />
+              Laporan
+            </NavLink>
+            <NavLink
+              to="/monitoring"
+              data-testid="nav-monitoring"
+              className={({ isActive }) =>
+                `flex items-center gap-3 pl-10 pr-3 py-2 rounded-md text-sm transition-all duration-200 ${
+                  isActive
+                    ? "bg-red-50/60 text-red-700 font-medium"
+                    : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                }`
+              }
+            >
+              <ListChecks size={16} weight="duotone" />
+              Monitoring
+            </NavLink>
+          </div>
+        </div>
+
+        <NavLink
+          to="/auto-post"
+          data-testid="nav-auto-post"
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-all duration-200 ${
+              isActive
+                ? "bg-blue-50 text-blue-700 border border-blue-200"
+                : "text-slate-600 hover:bg-slate-50 hover:text-slate-900 border border-transparent"
+            }`
+          }
+        >
+          <PaperPlaneRight size={20} weight="duotone" />
+          Auto Post
+        </NavLink>
       </nav>
 
       <div className="p-4 border-t border-slate-200">
