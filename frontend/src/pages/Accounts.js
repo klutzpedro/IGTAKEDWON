@@ -393,9 +393,9 @@ export default function Accounts() {
                         <span className="text-xs text-slate-400">—</span>
                       )}
                     </TableCell>
-                    <TableCell className="text-xs text-slate-500 max-w-[200px]">
+                    <TableCell className="text-xs text-slate-500 min-w-[180px]">
                       {acc.login_error ? (
-                        <span className="text-red-500 truncate block" title={acc.login_error}>
+                        <span className="text-red-500 whitespace-normal break-words" title={acc.login_error}>
                           {acc.login_error}
                         </span>
                       ) : acc.is_logged_in ? (
