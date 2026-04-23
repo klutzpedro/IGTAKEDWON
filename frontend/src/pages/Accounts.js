@@ -393,10 +393,10 @@ export default function Accounts() {
                         <span className="text-xs text-slate-400">—</span>
                       )}
                     </TableCell>
-                    <TableCell className="text-xs text-slate-500 min-w-[180px]">
+                    <TableCell className="text-xs text-slate-500 max-w-[160px]">
                       {acc.login_error ? (
-                        <span className="text-red-500 whitespace-normal break-words" title={acc.login_error}>
-                          {acc.login_error}
+                        <span className="text-red-500 text-[11px] leading-tight line-clamp-2 cursor-help" title={acc.login_error}>
+                          {acc.login_error.length > 60 ? acc.login_error.substring(0, 60) + "..." : acc.login_error}
                         </span>
                       ) : acc.is_logged_in ? (
                         <span className="text-green-600">Siap digunakan</span>
