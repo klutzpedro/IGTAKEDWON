@@ -37,7 +37,34 @@ function ScheduleForm({ accounts, languages, onCreated }) {
   const [language, setLanguage] = useState("id");
   const [scheduleTime, setScheduleTime] = useState("13:00");
   const [imageSource, setImageSource] = useState("mixed");
+  const [referenceImageId, setReferenceImageId] = useState(null);
+  const [referencePreview, setReferencePreview] = useState(null);
+  const [uploading, setUploading] = useState(false);
   const [creating, setCreating] = useState(false);
+
+  const handleUploadReference = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("File harus berupa gambar");
+      return;
+    }
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const { data } = await axios.post(`${API}/auto-post/upload-reference`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setReferenceImageId(data.id);
+      setReferencePreview(`${API}/screenshots/${data.filename}`);
+      toast.success("Contoh gambar berhasil diupload");
+    } catch {
+      toast.error("Gagal upload gambar");
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -54,9 +81,12 @@ function ScheduleForm({ accounts, languages, onCreated }) {
         schedule_time: scheduleTime,
         frequency: "daily",
         image_source: imageSource,
+        reference_image_id: referenceImageId,
       });
       toast.success("Jadwal auto-post berhasil dibuat!");
       setTheme("");
+      setReferenceImageId(null);
+      setReferencePreview(null);
       onCreated();
     } catch (err) {
       toast.error(err.response?.data?.detail || "Gagal membuat jadwal");
@@ -112,6 +142,33 @@ function ScheduleForm({ accounts, languages, onCreated }) {
             placeholder="Contoh: motivasi pagi hari, tips bisnis online, fakta unik..."
             className="h-9 text-sm"
           />
+        </div>
+
+        <div className="space-y-1.5 md:col-span-2">
+          <Label className="text-xs font-medium text-slate-600">Contoh Gambar (Opsional)</Label>
+          <p className="text-[11px] text-slate-400 -mt-0.5">AI akan membuat variasi gambar mirip contoh ini setiap posting. Komposisi, warna, dan gaya font akan dipertahankan.</p>
+          <div className="flex items-center gap-3">
+            <label
+              data-testid="autopost-ref-upload"
+              className="flex items-center gap-2 px-3 py-1.5 border border-dashed border-slate-300 rounded-md cursor-pointer hover:border-blue-400 hover:bg-blue-50/50 transition-colors"
+            >
+              <ImageIcon size={16} className="text-slate-400" />
+              <span className="text-xs text-slate-500">{uploading ? "Uploading..." : "Pilih gambar..."}</span>
+              <input type="file" accept="image/*" className="hidden" onChange={handleUploadReference} disabled={uploading} />
+            </label>
+            {referencePreview && (
+              <div className="relative">
+                <img src={referencePreview} alt="ref" className="w-12 h-12 object-cover rounded border border-slate-200" />
+                <button
+                  type="button"
+                  onClick={() => { setReferenceImageId(null); setReferencePreview(null); }}
+                  className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-500 text-white flex items-center justify-center text-[10px] leading-none hover:bg-red-600"
+                >
+                  x
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="space-y-1.5">

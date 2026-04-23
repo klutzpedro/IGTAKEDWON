@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, UploadFile, File
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -413,13 +413,36 @@ def _sync_report(cookies: dict, target_url: str, category: str) -> dict:
 
                 if parsed["type"] in ("post", "reel"):
                     # Step 3: Click three-dot menu
+                    menu_found = False
                     try:
                         more = page.locator('svg[aria-label="More options"]').first
                         more.click(force=True)
+                        menu_found = True
                         time.sleep(2)
-                    except Exception as e:
+                    except:
+                        pass
+
+                    if not menu_found:
+                        # Check if user is actually not logged in
+                        page_html = page.content()
+                        not_logged_in = (
+                            "Log In" in page_html and "Sign Up" in page_html
+                        ) or (
+                            'aria-label="More options"' not in page_html
+                            and ("Log in" in page_html or "Masuk" in page_html)
+                        )
+
+                        ss = f"noreport_{shortcode}_{timestamp}.png"
+                        try:
+                            page.screenshot(path=f"/app/backend/screenshots/{ss}", full_page=False)
+                        except:
+                            ss = ""
                         browser.close()
-                        return {"status": "failed", "message": f"Menu tidak ditemukan: {str(e)[:100]}"}
+
+                        if not_logged_in:
+                            return {"status": "failed", "message": "Session expired. Login ulang diperlukan.", "screenshot": ss}
+                        else:
+                            return {"status": "failed", "message": f"Menu tidak ditemukan. Session mungkin expired. Login ulang.", "screenshot": ss}
 
                     # Step 4: Click Report
                     report_clicked = False
@@ -1938,6 +1961,7 @@ class AutoPostScheduleCreate(BaseModel):
     schedule_time: str = "13:00"  # HH:MM format
     frequency: str = "daily"  # daily
     image_source: str = "mixed"  # "ai", "web", "mixed" (random)
+    reference_image_id: Optional[str] = None  # ID of uploaded reference image
 
 class AutoPostScheduleUpdate(BaseModel):
     theme: Optional[str] = None
@@ -1945,6 +1969,7 @@ class AutoPostScheduleUpdate(BaseModel):
     schedule_time: Optional[str] = None
     active: Optional[bool] = None
     image_source: Optional[str] = None
+    reference_image_id: Optional[str] = None
 
 LANGUAGES = [
     {"id": "id", "label": "Bahasa Indonesia"},
@@ -2004,13 +2029,67 @@ Balas HANYA caption + hashtag, tanpa penjelasan lain."""
     
     return {"caption": caption, "hashtags": hashtag_line, "full_text": f"{caption}\n\n{hashtag_line}"}
 
-async def generate_post_image(theme: str, language: str) -> bytes:
-    """Generate post image using GPT Image 1."""
+async def generate_post_image(theme: str, language: str, reference_image_id: str = None) -> bytes:
+    """Generate post image using GPT Image 1. If reference_image_id provided, create a variation."""
     from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
 
     api_key = os.environ.get("EMERGENT_LLM_KEY", "")
     image_gen = OpenAIImageGeneration(api_key=api_key)
 
+    # If we have a reference image, use it to guide AI generation
+    if reference_image_id:
+        ref_doc = await db.reference_images.find_one({"id": reference_image_id}, {"_id": 0})
+        if ref_doc:
+            ref_path = os.path.join(ROOT_DIR, "screenshots", ref_doc["filename"])
+            if os.path.exists(ref_path):
+                # First, analyze the reference image with GPT to understand its style
+                import base64
+                with open(ref_path, "rb") as f:
+                    ref_bytes = f.read()
+                ref_b64 = base64.b64encode(ref_bytes).decode("utf-8")
+
+                # Use text LLM to describe the reference image style
+                try:
+                    from emergentintegrations.llm.openai import chat_completion, Message
+                    description_response = await chat_completion(
+                        api_key=api_key,
+                        messages=[
+                            Message(role="user", content=[
+                                {"type": "text", "text": f"Analyze this image in detail. Describe: 1) The exact composition and layout 2) Number of people/objects and their positions 3) Color palette and style 4) If there is text: font style, position, size 5) Overall mood and aesthetic. Be very specific and detailed. This will be used to create a similar image with different content about: {theme}"},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{ref_b64}"}}
+                            ])
+                        ],
+                        model="gpt-4o"
+                    )
+                    style_description = description_response.message.content
+                    logger.info(f"AutoPost: Reference image analyzed: {style_description[:150]}...")
+                except Exception as desc_err:
+                    logger.warning(f"AutoPost: Failed to analyze reference image: {desc_err}")
+                    style_description = "professional Instagram post"
+
+                prompt = f"""Create a NEW Instagram post image about: {theme}
+
+IMPORTANT STYLE REFERENCE - Follow this exact style:
+{style_description}
+
+Create a VARIATION of this style with NEW content about "{theme}". Keep the same:
+- Layout and composition
+- Color palette and aesthetic  
+- If there was text: same font style and position, but with NEW text relevant to "{theme}" in {'Indonesian' if language == 'id' else 'English'}
+- Same number of people/objects in similar positions but with different poses/clothing
+- Same overall mood and visual style
+
+Make it look like it belongs to the same Instagram feed/brand but with fresh content."""
+
+                images = await image_gen.generate_images(
+                    prompt=prompt,
+                    model="gpt-image-1",
+                    number_of_images=1
+                )
+                if images and len(images) > 0:
+                    return images[0]
+
+    # Default: generate without reference
     prompt = f"Create a stunning, professional Instagram post image about: {theme}. Make it visually striking, modern, suitable for social media. High quality, vibrant colors, eye-catching design. Do NOT include any text or words in the image."
 
     images = await image_gen.generate_images(
@@ -2435,9 +2514,9 @@ async def execute_auto_post(schedule: dict) -> dict:
                 logger.info("AutoPost: Web image fetched successfully")
             except Exception as web_err:
                 logger.warning(f"AutoPost: Web image failed ({web_err}), falling back to AI")
-                image_bytes = await generate_post_image(schedule["theme"], schedule.get("language", "id"))
+                image_bytes = await generate_post_image(schedule["theme"], schedule.get("language", "id"), schedule.get("reference_image_id"))
         else:
-            image_bytes = await generate_post_image(schedule["theme"], schedule.get("language", "id"))
+            image_bytes = await generate_post_image(schedule["theme"], schedule.get("language", "id"), schedule.get("reference_image_id"))
 
         # Save image as proof
         img_name = f"autopost_{schedule['id']}_{int(__import__('time').time())}.jpg"
@@ -2546,6 +2625,48 @@ async def auto_post_scheduler_worker():
 async def get_languages():
     return LANGUAGES
 
+@api_router.post("/auto-post/upload-reference")
+async def upload_reference_image(file: UploadFile = File(...)):
+    """Upload a reference image for AI to create variations of."""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "File harus berupa gambar (JPEG/PNG)")
+
+    contents = await file.read()
+    if len(contents) > 10 * 1024 * 1024:
+        raise HTTPException(400, "Ukuran file maksimal 10MB")
+
+    # Save to screenshots folder with unique name
+    import base64
+    ref_id = str(uuid.uuid4())[:12]
+    ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "jpg"
+    filename = f"ref_{ref_id}.{ext}"
+    filepath = os.path.join(ROOT_DIR, "screenshots", filename)
+
+    with open(filepath, "wb") as f:
+        f.write(contents)
+
+    # Also store base64 in DB for AI prompt usage
+    b64_data = base64.b64encode(contents).decode("utf-8")
+    await db.reference_images.insert_one({
+        "id": ref_id,
+        "filename": filename,
+        "content_type": file.content_type,
+        "size": len(contents),
+        "b64_preview": b64_data[:200],  # Just for preview check
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return {"id": ref_id, "filename": filename, "url": f"/api/screenshots/{filename}"}
+
+@api_router.get("/auto-post/reference/{ref_id}")
+async def get_reference_image(ref_id: str):
+    doc = await db.reference_images.find_one({"id": ref_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Reference image not found")
+    return {"id": doc["id"], "filename": doc["filename"], "url": f"/api/screenshots/{doc['filename']}"}
+
+
+
 @api_router.post("/auto-post/schedules")
 async def create_schedule(data: AutoPostScheduleCreate):
     account = await db.ig_accounts.find_one({"id": data.account_id}, {"_id": 0})
@@ -2560,6 +2681,7 @@ async def create_schedule(data: AutoPostScheduleCreate):
         "schedule_time": data.schedule_time,
         "frequency": data.frequency,
         "image_source": data.image_source,
+        "reference_image_id": data.reference_image_id,
         "active": True,
         "last_posted_at": None,
         "last_status": None,
@@ -2581,6 +2703,7 @@ async def update_schedule(schedule_id: str, data: AutoPostScheduleUpdate):
     if data.schedule_time is not None: update["schedule_time"] = data.schedule_time
     if data.active is not None: update["active"] = data.active
     if data.image_source is not None: update["image_source"] = data.image_source
+    if data.reference_image_id is not None: update["reference_image_id"] = data.reference_image_id
     if not update:
         raise HTTPException(400, "Tidak ada data untuk diupdate")
     await db.auto_post_schedules.update_one({"id": schedule_id}, {"$set": update})
